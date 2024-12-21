@@ -9,29 +9,63 @@ const FormData = require('form-data');
 const fs = require('fs').promises;
 
 const app = express();
-const PHP_URL = 'https://www.iestpasist.com';
+// Environment variables with fallbacks
+const PHP_URL = process.env.PHP_URL || 'https://www.iestpasist.com';
+const DB_HOST = process.env.DB_HOST || '162.241.61.0';
+const DB_USER = process.env.DB_USER || 'iestpasi_edwin';
+const DB_PASS = process.env.DB_PASSWORD || 'EDWINrosas774433)';
+const DB_NAME = process.env.DB_DATABASE || 'iestpasi_iestp';
 
-// Create directories if they don't exist
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
-const JUSTIFICATION_DOCS_DIR = path.join(__dirname, 'justification_docs');
+// Use tmp directory for Railway deployment
+const BASE_UPLOAD_DIR = process.env.NODE_ENV === 'production' ? '/tmp' : __dirname;
+const UPLOADS_DIR = path.join(BASE_UPLOAD_DIR, 'uploads');
+const PROFILE_IMAGES_DIR = path.join(BASE_UPLOAD_DIR, 'profile_images');
+const JUSTIFICATION_DOCS_DIR = path.join(BASE_UPLOAD_DIR, 'justification_docs');
+// Ensure directories exist
+async function setupDirectories() {
+  try {
+    await Promise.all([
+      fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true }),
+      fs.mkdir(JUSTIFICATION_DOCS_DIR, { recursive: true }),
+      fs.mkdir(UPLOADS_DIR, { recursive: true })
+    ]);
+    console.log('Directories created successfully');
+  } catch (error) {
+    console.error('Error creating directories:', error);
+  }
+}
+// Test database connection
+async function testDBConnection() {
+  try {
+    const connection = await pool.getConnection();
+    console.log('Database connection successful');
+    connection.release();
+  } catch (error) {
+    console.error('Database connection failed:', error);
+    process.exit(1);
+  }
+}
 
+testDBConnection();
 Promise.all([
   fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true }),
   fs.mkdir(JUSTIFICATION_DOCS_DIR, { recursive: true }),
   fs.mkdir(UPLOADS_DIR, { recursive: true })
 ]).then(() => console.log('Directories created')).catch(console.error);
 
-// MySQL Connection Pool Configuration
+// MySQL Connection Pool with error handling
 const pool = mysql.createPool({
-  host: '162.241.61.0',
-  user: 'iestpasi_edwin',
-  password: 'EDWINrosas774433)',
-  database: 'iestpasi_iestp',
+  host: DB_HOST,
+  user: DB_USER,
+  password: DB_PASS,
+  database: DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0
 });
+
 
 // Configure multer for different upload types
 const storage = {
@@ -564,8 +598,20 @@ app.get('/estudiante/:dni/imagen', authenticateStudent, async (req, res) => {
   }
 });
 
-// Start server
+// Start server with proper port binding for Railway
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
+const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Server running on port ${port}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    pool.end().then(() => {
+      console.log('Database pool closed');
+      process.exit(0);
+    });
+  });
 });
