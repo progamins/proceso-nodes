@@ -100,7 +100,116 @@ async function uploadImageToPhp(imageBuffer, originalname) {
     throw new Error('Error uploading image to PHP server');
   }
 }
+// Get estudiante completo
+app.get('/estudiante/:dni', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      WITH EstudianteInfo AS (
+        SELECT 
+          e.nombre, 
+          e.programa, 
+          e.dni, 
+          e.email_corporativo, 
+          e.email, 
+          e.celular, 
+          e.direccion,
+          e.semestre_actual,
+          e.programa_id,
+          q.qr_code_path,
+          pa.periodo_id,
+          pa.nombre as periodo_nombre,
+          pa.fecha_inicio,
+          pa.fecha_fin
+        FROM estudiantes e
+        LEFT JOIN qr_codes q ON e.dni = q.dni_estudiante
+        JOIN periodos_academicos pa ON pa.estado = 1 
+          AND CURRENT_TIMESTAMP BETWEEN pa.fecha_inicio AND pa.fecha_fin
+        WHERE e.dni = ?
+        LIMIT 1
+      )
+      SELECT 
+        ei.*,
+        JSON_ARRAYAGG(
+          JSON_OBJECT(
+            'unidad_id', ud.unidad_id,
+            'nombre_unidad', ud.nombre_unidad,
+            'nombre_semestre', ts.nombre_semestre,
+            'semestre_descripcion', ts.descripcion
+          )
+        ) as unidades_didacticas
+      FROM EstudianteInfo ei
+      LEFT JOIN unidades_didacticas ud ON ud.programa_id = ei.programa_id 
+        AND ud.periodo_id = ei.periodo_id
+        AND ud.semestre_id = ei.semestre_actual
+      LEFT JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
+      GROUP BY ei.dni
+    `, [req.params.dni]);
 
+    if (rows.length > 0) {
+      const student = rows[0];
+      const qrCodeUrl = student.qr_code_path
+        ? `${PHP_URL}/qr_codes/${path.basename(student.qr_code_path)}`
+        : null;
+
+      // Parse unidades didácticas from JSON string
+      const unidadesDidacticas = JSON.parse(student.unidades_didacticas || '[]');
+
+      res.json({
+        message: 'Datos del estudiante obtenidos',
+        data: {
+          // Información básica
+          nombre: student.nombre,
+          programa: student.programa,
+          dni: student.dni,
+          correo_institucional: student.email_corporativo || 'No disponible',
+          correo_personal: student.email || 'No disponible',
+          telefonos: student.celular || 'No disponible',
+          direccion: student.direccion || 'No disponible',
+          qr_code_url: qrCodeUrl || 'No disponible',
+          
+          // Información académica
+          semestre_actual: student.semestre_actual,
+          periodo_academico: {
+            id: student.periodo_id,
+            nombre: student.periodo_nombre,
+            fecha_inicio: student.fecha_inicio,
+            fecha_fin: student.fecha_fin
+          },
+          unidades_didacticas: unidadesDidacticas
+        }
+      });
+    } else {
+      res.status(404).json({ message: 'Estudiante no encontrado' });
+    }
+  } catch (err) {
+    console.error('Error en la consulta SQL:', err);
+    res.status(500).json({ message: 'Error en el servidor', error: err.message });
+  }
+});
+// Get QR code del estudiante
+app.get('/estudiante/:dni/qr_code', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT qr_code_path FROM qr_codes WHERE dni_estudiante = ?',
+      [req.params.dni]
+    );
+
+    if (rows.length > 0) {
+      const qrCodePath = rows[0].qr_code_path;
+      if (qrCodePath) {
+        const qrCodeUrl = `${PHP_URL}/qr_codes/${path.basename(qrCodePath)}`;
+        res.json({ qr_code_url: qrCodeUrl });
+      } else {
+        res.status(404).json({ message: 'Código QR no encontrado' });
+      }
+    } else {
+      res.status(404).json({ message: 'Estudiante no encontrado' });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error en el servidor', error: err });
+  }
+});
 // Login endpoint
 app.post('/login', async (req, res) => {
   const { usuario, clave } = req.body;
