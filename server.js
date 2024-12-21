@@ -42,20 +42,66 @@ const PROFILE_IMAGES_DIR = process.env.NODE_ENV === 'production'
   ? path.join('/tmp', 'profile_images')
   : path.join(__dirname, 'profile_images');
 
-// Configuración de la base de datos MySQL
-const dbConfig = {
-  host: process.env.DB_HOST || '162.241.61.0',
-  user: process.env.DB_USER || 'iestpasi_edwin',
-  password: process.env.DB_PASSWORD || 'EDWINrosas774433)',
-  database: process.env.DB_NAME || 'iestpasi_iestp',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 0,
-  connectTimeout: 30000,
-};
-
+  const dbConfig = {
+    host: '162.241.61.0',
+    user: 'iestpasi_edwin',
+    password: 'EDWINrosas774433)',
+    database: 'iestpasi_iestp',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 0,
+    connectTimeout: 60000,
+    ssl: {
+      rejectUnauthorized: false
+    },
+    debug: true,
+    charset: 'utf8mb4'
+  };
+  
+  // Función para intentar conectar a la base de datos con reintentos
+  async function initializeDatabase(retryCount = 0, maxRetries = 5) {
+    try {
+      if (!pool) {
+        console.log('Intentando conectar a la base de datos...');
+        console.log(`Host: ${dbConfig.host}`);
+        console.log(`Usuario: ${dbConfig.user}`);
+        console.log(`Base de datos: ${dbConfig.database}`);
+        
+        pool = mysql.createPool(dbConfig);
+        
+        // Verificar conexión
+        const connection = await pool.getConnection();
+        
+        // Intentar una consulta simple
+        await connection.query('SELECT 1');
+        
+        console.log('Conexión a la base de datos establecida exitosamente');
+        connection.release();
+      }
+      return pool;
+    } catch (error) {
+      console.error('Error de conexión:', {
+        message: error.message,
+        code: error.code,
+        errno: error.errno,
+        sqlState: error.sqlState,
+        sqlMessage: error.sqlMessage
+      });
+  
+      if (retryCount < maxRetries) {
+        const retryDelay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+        console.log(`Reintentando en ${retryDelay/1000} segundos... (intento ${retryCount + 1}/${maxRetries})`);
+        
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        return initializeDatabase(retryCount + 1, maxRetries);
+      } else {
+        console.error('Máximo número de reintentos alcanzado');
+        throw error;
+      }
+    }
+  }
 // Función para crear directorio de imágenes
 async function ensureDirectoryExists() {
   try {
@@ -66,23 +112,6 @@ async function ensureDirectoryExists() {
   }
 }
 
-// Inicializar pool de conexiones
-async function initializeDatabase() {
-  try {
-    if (!pool) {
-      pool = mysql.createPool(dbConfig);
-      // Verificar conexión
-      const connection = await pool.getConnection();
-      connection.release();
-      console.log('Conexión a la base de datos establecida exitosamente');
-    }
-    return pool;
-  } catch (error) {
-    console.error('Error al inicializar la base de datos:', error);
-    // Reintentar en 5 segundos
-    setTimeout(initializeDatabase, 5000);
-  }
-}
 
 // Middleware de base de datos mejorado
 const dbMiddleware = async (req, res, next) => {
@@ -94,25 +123,64 @@ const dbMiddleware = async (req, res, next) => {
     if (!pool) {
       await initializeDatabase();
     }
-    req.db = await pool.getConnection();
-    req.on('end', () => req.db?.release());
-    req.on('error', () => req.db?.release());
+
+    // Intentar obtener conexión
+    let connection;
+    try {
+      connection = await pool.getConnection();
+      
+      // Verificar conexión con una consulta simple
+      await connection.query('SELECT 1');
+      
+    } catch (connError) {
+      console.error('Error al obtener conexión:', connError);
+      
+      // Intentar reinicializar el pool
+      try {
+        if (pool) {
+          await pool.end();
+          pool = null;
+        }
+        await initializeDatabase();
+        connection = await pool.getConnection();
+      } catch (reinitError) {
+        console.error('Error al reinicializar conexión:', reinitError);
+        throw reinitError;
+      }
+    }
+
+    // Asignar la conexión a la request
+    req.db = connection;
+
+    // Asegurar que la conexión se libere al final
+    res.on('finish', () => {
+      if (connection) {
+        connection.release();
+      }
+    });
+
+    res.on('error', () => {
+      if (connection) {
+        connection.release();
+      }
+    });
+
     next();
   } catch (error) {
-    console.error('Error de conexión a la base de datos:', error);
-    res.status(500).json({ message: 'Error de conexión a la base de datos' });
+    console.error('Error en middleware de base de datos:', {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+      sqlState: error.sqlState
+    });
+    
+    return res.status(500).json({ 
+      message: 'Error de conexión a la base de datos',
+      error: process.env.NODE_ENV === 'production' ? 
+        'Error de conexión' : error.message
+    });
   }
 };
-
-// Middleware de error global
-app.use((err, req, res, next) => {
-  console.error('Error no manejado:', err);
-  res.status(500).json({ 
-    message: 'Error interno del servidor',
-    error: process.env.NODE_ENV === 'production' ? 'Error interno' : err.message
-  });
-});
-
 // Configuración CORS
 app.use(cors({
   origin: '*',
