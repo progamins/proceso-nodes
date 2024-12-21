@@ -104,60 +104,48 @@ async function uploadImageToPhp(imageBuffer, originalname) {
 app.get('/estudiante/:dni', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
-      WITH EstudianteInfo AS (
-        SELECT 
-          e.nombre, 
-          e.programa, 
-          e.dni, 
-          e.email_corporativo, 
-          e.email, 
-          e.celular, 
-          e.direccion,
-          e.semestre_actual,
-          e.programa_id,
-          q.qr_code_path,
-          pa.periodo_id,
-          pa.nombre as periodo_nombre,
-          pa.fecha_inicio,
-          pa.fecha_fin
-        FROM estudiantes e
-        LEFT JOIN qr_codes q ON e.dni = q.dni_estudiante
-        JOIN periodos_academicos pa ON pa.estado = 1 
-          AND CURRENT_TIMESTAMP BETWEEN pa.fecha_inicio AND pa.fecha_fin
-        WHERE e.dni = ?
-        LIMIT 1
-      )
       SELECT 
-        ei.*,
-        JSON_ARRAYAGG(
-          JSON_OBJECT(
-            'unidad_id', ud.unidad_id,
-            'nombre_unidad', ud.nombre_unidad,
-            'nombre_semestre', ts.nombre_semestre,
-            'semestre_descripcion', ts.descripcion
-          )
-        ) as unidades_didacticas
-      FROM EstudianteInfo ei
-      LEFT JOIN unidades_didacticas ud ON ud.programa_id = ei.programa_id 
-        AND ud.periodo_id = ei.periodo_id
-        AND ud.semestre_id = ei.semestre_actual
-      LEFT JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
-      GROUP BY ei.dni
+        e.nombre, 
+        e.programa, 
+        e.dni, 
+        e.email_corporativo, 
+        e.email, 
+        e.celular, 
+        e.direccion,
+        e.semestre_actual,
+        e.programa_id,
+        q.qr_code_path,
+        pa.periodo_id,
+        pa.nombre as periodo_nombre,
+        pa.fecha_inicio,
+        pa.fecha_fin
+      FROM estudiantes e
+      LEFT JOIN qr_codes q ON e.dni = q.dni_estudiante
+      LEFT JOIN periodos_academicos pa ON pa.estado = 1 
+        AND CURRENT_TIMESTAMP BETWEEN pa.fecha_inicio AND pa.fecha_fin
+      WHERE e.dni = ?
     `, [req.params.dni]);
 
     if (rows.length > 0) {
       const student = rows[0];
-      const qrCodeUrl = student.qr_code_path
-        ? `${PHP_URL}/qr_codes/${path.basename(student.qr_code_path)}`
-        : null;
-
-      // Parse unidades didácticas from JSON string
-      const unidadesDidacticas = JSON.parse(student.unidades_didacticas || '[]');
+      
+      // Obtener unidades didácticas si es necesario
+      const [unidadesRows] = await pool.execute(`
+        SELECT 
+          ud.unidad_id,
+          ud.nombre_unidad,
+          ts.nombre_semestre,
+          ts.descripcion as semestre_descripcion
+        FROM unidades_didacticas ud
+        INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
+        WHERE ud.programa_id = ? 
+          AND ud.semestre_id = ?
+        ORDER BY ud.unidad_id
+      `, [student.programa_id, student.semestre_actual]);
 
       res.json({
         message: 'Datos del estudiante obtenidos',
         data: {
-          // Información básica
           nombre: student.nombre,
           programa: student.programa,
           dni: student.dni,
@@ -165,17 +153,14 @@ app.get('/estudiante/:dni', async (req, res) => {
           correo_personal: student.email || 'No disponible',
           telefonos: student.celular || 'No disponible',
           direccion: student.direccion || 'No disponible',
-          qr_code_url: qrCodeUrl || 'No disponible',
-          
-          // Información académica
           semestre_actual: student.semestre_actual,
-          periodo_academico: {
+          periodo_academico: student.periodo_id ? {
             id: student.periodo_id,
             nombre: student.periodo_nombre,
             fecha_inicio: student.fecha_inicio,
             fecha_fin: student.fecha_fin
-          },
-          unidades_didacticas: unidadesDidacticas
+          } : null,
+          unidades_didacticas: unidadesRows
         }
       });
     } else {
@@ -186,6 +171,7 @@ app.get('/estudiante/:dni', async (req, res) => {
     res.status(500).json({ message: 'Error en el servidor', error: err.message });
   }
 });
+
 // Get QR code del estudiante
 app.get('/estudiante/:dni/qr_code', async (req, res) => {
   try {
@@ -206,34 +192,10 @@ app.get('/estudiante/:dni/qr_code', async (req, res) => {
       res.status(404).json({ message: 'Estudiante no encontrado' });
     }
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error en el servidor', error: err });
+    console.error('Error obteniendo QR:', err);
+    res.status(500).json({ message: 'Error en el servidor', error: err.message });
   }
 });
-// Login endpoint
-app.post('/login', async (req, res) => {
-  const { usuario, clave } = req.body;
-
-  if (!usuario || !clave) {
-    return res.status(400).send({ message: 'Username and password are required' });
-  }
-
-  try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM estudiantes WHERE usuario = ? AND clave = ?',
-      [usuario, clave]
-    );
-
-    if (rows.length > 0) {
-      res.send({ message: 'Login successful', data: rows[0] });
-    } else {
-      res.status(401).send({ message: 'Invalid credentials' });
-    }
-  } catch (err) {
-    res.status(500).send({ message: 'Server error', error: err.message });
-  }
-});
-
 // Get student profile image
 app.get('/estudiante/:dni/imagen', async (req, res) => {
   try {
