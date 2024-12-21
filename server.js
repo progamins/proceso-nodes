@@ -7,278 +7,149 @@ const multer = require('multer');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs').promises;
-
 const app = express();
-// Environment variables with fallbacks
-const PHP_URL = process.env.PHP_URL || 'https://www.iestpasist.com';
-const DB_HOST = process.env.DB_HOST || '162.241.61.0';
-const DB_USER = process.env.DB_USER || 'iestpasi_edwin';
-const DB_PASS = process.env.DB_PASSWORD || 'EDWINrosas774433)';
-const DB_NAME = process.env.DB_DATABASE || 'iestpasi_iestp';
 
-// Use tmp directory for Railway deployment
-const BASE_UPLOAD_DIR = process.env.NODE_ENV === 'production' ? '/tmp' : __dirname;
-const UPLOADS_DIR = path.join(BASE_UPLOAD_DIR, 'uploads');
-const PROFILE_IMAGES_DIR = path.join(BASE_UPLOAD_DIR, 'profile_images');
-const JUSTIFICATION_DOCS_DIR = path.join(BASE_UPLOAD_DIR, 'justification_docs');
-// Ensure directories exist
-async function setupDirectories() {
-  try {
-    await Promise.all([
-      fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true }),
-      fs.mkdir(JUSTIFICATION_DOCS_DIR, { recursive: true }),
-      fs.mkdir(UPLOADS_DIR, { recursive: true })
-    ]);
-    console.log('Directories created successfully');
-  } catch (error) {
-    console.error('Error creating directories:', error);
-  }
-}
-// Test database connection
-async function testDBConnection() {
-  try {
-    const connection = await pool.getConnection();
-    console.log('Database connection successful');
-    connection.release();
-  } catch (error) {
-    console.error('Database connection failed:', error);
-    process.exit(1);
-  }
-}
+// Constantes para las URLs
+const BASE_URL = 'https://www.iestpasist.com';
+const UPLOADS_PATH = '/uploads/';
+const IMAGES_PATH = '/imagenesJ/';
+const QR_PATH = '/qr_codes/';
 
-testDBConnection();
-Promise.all([
-  fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true }),
-  fs.mkdir(JUSTIFICATION_DOCS_DIR, { recursive: true }),
-  fs.mkdir(UPLOADS_DIR, { recursive: true })
-]).then(() => console.log('Directories created')).catch(console.error);
+// Crear la carpeta para las imágenes de perfil si no existe
+const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
+fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
+  .then(() => console.log('Directorio de imágenes de perfil creado'))
+  .catch(console.error);
 
-// MySQL Connection Pool with error handling
-const pool = mysql.createPool({
-  host: DB_HOST,
-  user: DB_USER,
-  password: DB_PASS,
-  database: DB_NAME,
+// Configuración de la base de datos MySQL
+const dbConfig = {
+  host: '162.241.61.0',
+  user: 'iestpasi_edwin',
+  password: 'EDWINrosas774433)',
+  database: 'iestpasi_iestp',
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0,
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 0
-});
-
-
-// Configure multer for different upload types
-const storage = {
-  profile: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, PROFILE_IMAGES_DIR),
-    filename: (req, file, cb) => {
-      const dni = req.params.dni;
-      const fileExt = path.extname(file.originalname);
-      cb(null, `${dni}${fileExt}`);
-    }
-  }),
-  justification: multer.diskStorage({
-    destination: (req, file, cb) => cb(null, JUSTIFICATION_DOCS_DIR),
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      cb(null, `${uniqueSuffix}-${file.originalname}`);
-    }
-  })
+  queueLimit: 0
 };
 
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|pdf/;
-  const mimetype = allowedTypes.test(file.mimetype);
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  
-  if (mimetype && extname) return cb(null, true);
-  cb(new Error('Invalid file type. Only JPEG, JPG, PNG and PDF files are allowed'));
-};
+// Crear pool de conexiones
+const pool = mysql.createPool(dbConfig);
 
-const uploads = {
-  profile: multer({ 
-    storage: storage.profile,
-    limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter
-  }),
-  justification: multer({ 
-    storage: storage.justification,
-    limits: { fileSize: 10 * 1024 * 1024 },
-    fileFilter
-  })
-};
-
-// CORS and body parser middleware
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  exposedHeaders: ['Content-Disposition'],
-  credentials: true
-}));
-
-app.use(bodyParser.json());
-
-// Authentication middleware
-const authenticateStudent = async (req, res, next) => {
-  const dni = req.params.dni || req.body.dni;
-  if (!dni) return res.status(401).json({ message: 'Authentication required' });
-
+// Middleware para manejar errores de conexión
+const dbMiddleware = async (req, res, next) => {
   try {
-    const [rows] = await pool.execute(
-      'SELECT id FROM estudiantes WHERE dni = ?',
-      [dni]
-    );
-    if (rows.length === 0) return res.status(401).json({ message: 'Unauthorized' });
-    req.studentId = rows[0].id;
+    req.db = await pool.getConnection();
     next();
-  } catch (error) {
-    console.error('Authentication error:', error);
-    res.status(500).json({ message: 'Server error during authentication' });
+  } catch (err) {
+    console.error('Error de conexión a la base de datos:', err);
+    res.status(500).json({ message: 'Error de conexión a la base de datos' });
   }
 };
 
-// Login endpoint
-app.post('/login', async (req, res) => {
+// Configuración de multer para imágenes de perfil
+const profileImageStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, PROFILE_IMAGES_DIR)
+  },
+  filename: function (req, file, cb) {
+    const dni = req.params.dni;
+    const fileExt = path.extname(file.originalname);
+    cb(null, `${dni}${fileExt}`);
+  }
+});
+
+const uploadProfileImage = multer({ 
+  storage: profileImageStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png/;
+    const mimetype = filetypes.test(file.mimetype);
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    if (mimetype && extname) return cb(null, true);
+    cb(new Error('Solo se permiten archivos de imagen (jpeg, jpg, png)'));
+  }
+});
+
+// Función para subir imagen al nuevo servidor PHP
+async function uploadImageToPhp(imageBuffer, originalname) {
+  try {
+    const formData = new FormData();
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const filename = uniqueSuffix + '-' + originalname;
+    
+    formData.append('imagen', imageBuffer, {
+      filename: filename,
+      contentType: 'image/jpeg'
+    });
+
+    const response = await axios.post(`${BASE_URL}/upload.php`, formData, {
+      headers: {
+        ...formData.getHeaders(),
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity
+    });
+
+    return {
+      success: true,
+      filename: filename,
+      url: `${BASE_URL}${IMAGES_PATH}${filename}`
+    };
+  } catch (error) {
+    console.error('Error al subir imagen:', error);
+    throw new Error('Error al subir imagen al servidor PHP');
+  }
+}
+
+// Endpoints base
+app.get('/status', (req, res) => res.send({ message: 'Servidor activo y en funcionamiento' }));
+
+// Endpoint de login
+app.post('/login', dbMiddleware, async (req, res) => {
   const { usuario, clave } = req.body;
-
-  if (!usuario || !clave) {
-    return res.status(400).json({ message: 'Usuario y contraseña son requeridos' });
-  }
+  const connection = req.db;
 
   try {
-    const [rows] = await pool.execute(`
-      SELECT e.*, pe.nombre_programa, c.id as carnet_id, qr.qr_code_path
-      FROM estudiantes e
-      LEFT JOIN programas_estudio pe ON e.programa_id = pe.programa_id
-      LEFT JOIN carnet c ON e.dni = c.dni
-      LEFT JOIN qr_codes qr ON e.dni = qr.dni_estudiante
-      WHERE e.usuario = ? AND e.clave = ?
-    `, [usuario.trim(), clave.trim()]);
+    const [rows] = await connection.execute(
+      'SELECT * FROM estudiantes WHERE usuario = ? AND clave = ?',
+      [usuario, clave]
+    );
 
     if (rows.length > 0) {
-      const userData = {
-        id: rows[0].id,
-        dni: rows[0].dni,
-        nombre: rows[0].nombre,
-        email: rows[0].email,
-        programa: rows[0].nombre_programa,
-        carnet_id: rows[0].carnet_id,
-        qr_code: rows[0].qr_code_path
-      };
-
-      res.json({
-        message: 'Inicio de sesión exitoso',
-        data: userData
-      });
+      res.json({ message: 'Inicio de sesión exitoso', data: rows[0] });
     } else {
-      res.status(401).json({ message: 'Credenciales inválidas' });
-    }
-  } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ message: 'Error en el servidor', error: err.message });
-  }
-});
-
-// Student profile endpoints
-app.get('/estudiante/:dni/perfil', authenticateStudent, async (req, res) => {
-  try {
-    const [rows] = await pool.execute(`
-      SELECT 
-        e.*,
-        pe.nombre_programa,
-        c.id as carnet_id,
-        qr.qr_code_path,
-        (
-          SELECT periodo_id 
-          FROM periodos_academicos 
-          WHERE estado = 1 
-          ORDER BY fecha_inicio DESC 
-          LIMIT 1
-        ) as periodo_actual
-      FROM estudiantes e
-      LEFT JOIN programas_estudio pe ON e.programa_id = pe.programa_id
-      LEFT JOIN carnet c ON e.dni = c.dni
-      LEFT JOIN qr_codes qr ON e.dni = qr.dni_estudiante
-      WHERE e.dni = ?
-    `, [req.params.dni]);
-
-    if (rows.length > 0) {
-      const studentData = rows[0];
-      res.json({
-        message: 'Perfil recuperado exitosamente',
-        data: studentData
-      });
-    } else {
-      res.status(404).json({ message: 'Estudiante no encontrado' });
+      res.status(401).json({ message: 'Credenciales incorrectas' });
     }
   } catch (error) {
-    console.error('Error getting profile:', error);
-    res.status(500).json({ message: 'Error recuperando perfil' });
+    console.error('Error en login:', error);
+    res.status(500).json({ message: 'Error en el servidor', error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
-app.put('/estudiante/:dni/update', authenticateStudent, async (req, res) => {
-  const { field, value } = req.body;
-  const allowedFields = ['email', 'celular', 'direccion'];
-
-  if (!allowedFields.includes(field)) {
-    return res.status(400).json({ message: 'Campo no permitido para actualización' });
-  }
+// Endpoint para obtener horario
+app.get('/horario/:programaId', dbMiddleware, async (req, res) => {
+  const { programaId } = req.params;
+  const connection = req.db;
 
   try {
-    const connection = await pool.getConnection();
-    try {
-      await connection.beginTransaction();
-
-      await connection.execute(
-        `UPDATE estudiantes SET ${field} = ? WHERE dni = ?`,
-        [value, req.params.dni]
-      );
-
-      const [rows] = await connection.execute(
-        'SELECT email, celular, direccion FROM estudiantes WHERE dni = ?',
-        [req.params.dni]
-      );
-
-      await connection.commit();
-      res.json({
-        message: 'Campo actualizado exitosamente',
-        data: rows[0]
-      });
-
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
-  } catch (error) {
-    console.error('Update error:', error);
-    res.status(500).json({ message: 'Error actualizando campo' });
-  }
-});
-
-// Schedule endpoints
-app.get('/horario/:programaId', authenticateStudent, async (req, res) => {
-  try {
-    const [rows] = await pool.execute(`
+    const [rows] = await connection.execute(`
       SELECT 
         h.horario_id,
         h.nombre,
         h.archivo,
         h.fecha_creacion,
-        pe.nombre_programa,
-        h.semestre
+        pe.nombre_programa as programa_nombre
       FROM horarios h
       INNER JOIN programas_estudio pe ON h.programa_id = pe.programa_id
       WHERE h.programa_id = ?
       ORDER BY h.fecha_creacion DESC
-    `, [req.params.programaId]);
+    `, [programaId]);
 
     if (rows.length > 0) {
       const horario = rows[0];
-      const horarioUrl = `${PHP_URL}/uploads/${horario.archivo}`;
+      const horarioUrl = `${BASE_URL}${UPLOADS_PATH}${horario.archivo}`;
 
       try {
         await axios.head(horarioUrl);
@@ -290,328 +161,147 @@ app.get('/horario/:programaId', authenticateStudent, async (req, res) => {
           }
         });
       } catch (error) {
-        res.status(404).json({ message: 'Archivo PDF no disponible' });
+        res.status(404).json({
+          message: 'El archivo PDF no se encuentra disponible',
+          error: error.message
+        });
       }
     } else {
-      res.status(404).json({ message: 'No se encontró horario para este programa' });
-    }
-  } catch (error) {
-    console.error('Schedule error:', error);
-    res.status(500).json({ message: 'Error recuperando horario' });
-  }
-});
-
-// Justification endpoints
-app.post('/justificaciones', authenticateStudent, uploads.justification.array('documentos', 5), async (req, res) => {
-  const { dni_estudiante, tipo_justificacion, motivo, fecha_inicio, fecha_fin } = req.body;
-
-  try {
-    const connection = await pool.getConnection();
-    try {
-      await connection.beginTransaction();
-
-      const [result] = await connection.execute(`
-        INSERT INTO justificaciones 
-        (dni_estudiante, TipoJustificacionID, MotivoEstudiante, Fecha_Inicio, Fecha_Fin, Fecha_Justificacion)
-        VALUES (?, ?, ?, ?, ?, CURDATE())
-      `, [dni_estudiante, tipo_justificacion, motivo, fecha_inicio, fecha_fin]);
-
-      if (req.files && req.files.length > 0) {
-        const uploadPromises = req.files.map(file => 
-          connection.execute(`
-            INSERT INTO jimg (JustificacionID, NombreArchivo, RutaArchivo, FechaSubida)
-            VALUES (?, ?, ?, NOW())
-          `, [result.insertId, file.originalname, file.filename])
-        );
-
-        await Promise.all(uploadPromises);
-      }
-
-      await connection.commit();
-      res.json({
-        message: 'Justificación creada exitosamente',
-        data: { justificacionId: result.insertId }
+      res.status(404).json({ 
+        message: 'No se encontró horario para este programa de estudio'
       });
-
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
     }
   } catch (error) {
-    console.error('Justification creation error:', error);
-    res.status(500).json({ message: 'Error creando justificación' });
+    console.error('Error al obtener horario:', error);
+    res.status(500).json({
+      message: 'Error al obtener el horario',
+      error: error.message
+    });
+  } finally {
+    connection.release();
   }
 });
 
-app.get('/justificaciones/:dni', authenticateStudent, async (req, res) => {
+// Endpoint para obtener QR del estudiante
+app.get('/estudiante/:dni/qr_code', dbMiddleware, async (req, res) => {
+  const { dni } = req.params;
+  const connection = req.db;
+
   try {
-    const [rows] = await pool.execute(`
-      SELECT 
-        j.JustificacionID,
-        j.Fecha_Justificacion,
-        j.MotivoEstudiante,
-        j.Fecha_Inicio,
-        j.Fecha_Fin,
-        j.Estado,
-        tj.Nombre as TipoJustificacion,
-        i.NombreArchivo,
-        i.RutaArchivo,
-        i.FechaSubida
-      FROM justificaciones j
-      INNER JOIN tipos_justificacion tj ON j.TipoJustificacionID = tj.TipoJustificacionID
-      LEFT JOIN jimg i ON j.JustificacionID = i.JustificacionID
-      WHERE j.dni_estudiante = ?
-      ORDER BY j.Fecha_Justificacion DESC
-    `, [req.params.dni]);
-
-    const justificacionesMap = new Map();
-    
-    rows.forEach(record => {
-      if (!justificacionesMap.has(record.JustificacionID)) {
-        justificacionesMap.set(record.JustificacionID, {
-          justificacionID: record.JustificacionID,
-          fecha_justificacion: record.Fecha_Justificacion,
-          tipo_justificacion: record.TipoJustificacion,
-          motivo_estudiante: record.MotivoEstudiante,
-          fecha_inicio: record.Fecha_Inicio,
-          fecha_fin: record.Fecha_Fin,
-          estado: record.Estado,
-          documentos: []
-        });
-      }
-      
-      if (record.RutaArchivo) {
-        justificacionesMap.get(record.JustificacionID).documentos.push({
-          nombre: record.NombreArchivo,
-          url: record.RutaArchivo,
-          fecha_subida: record.FechaSubida
-        });
-      }
-    });
-
-    res.json({
-      message: 'Justificaciones recuperadas exitosamente',
-      data: Array.from(justificacionesMap.values())
-    });
-
-  } catch (error) {
-    console.error('Error getting justifications:', error);
-    res.status(500).json({ message: 'Error recuperando justificaciones' });
-  }
-});
-
-// Academic periods endpoint
-app.get('/periodos/:dni', authenticateStudent, async (req, res) => {
-  try {
-    const [rows] = await pool.execute(`
-      SELECT 
-        pa.periodo_id,
-        pa.nombre as periodo_nombre,
-        pa.fecha_inicio,
-        pa.fecha_fin,
-        pa.estado,
-        ts.nombre_semestre,
-        ts.descripcion as semestre_descripcion,
-        ud.unidad_id,
-        ud.nombre_unidad
-      FROM periodos_academicos pa
-      CROSS JOIN JSON_TABLE(pa.semestres, '$[*]' COLUMNS (semestre_id INT PATH '$')) js
-      INNER JOIN tipo_semestre ts ON js.semestre_id = ts.semestre_id
-      INNER JOIN unidades_didacticas ud ON pa.periodo_id = ud.periodo_id
-      INNER JOIN estudiantes e ON e.programa_id = ud.programa_id
-      WHERE e.dni = ?
-      ORDER BY pa.fecha_inicio DESC, ts.semestre_id ASC
-    `, [req.params.dni]);
-
-    const periodosMap = new Map();
-    
-    rows.forEach(row => {
-      if (!periodosMap.has(row.periodo_id)) {
-        periodosMap.set(row.periodo_id, {
-          periodo_id: row.periodo_id,
-          nombre: row.periodo_nombre,
-          fecha_inicio: row.fecha_inicio,
-          fecha_fin: row.fecha_fin,
-          estado: row.estado,
-          semestres: new Map()
-        });
-      }
-
-      const periodo = periodosMap.get(row.periodo_id);
-      
-      if (!periodo.semestres.has(row.nombre_semestre)) {
-        periodo.semestres.set(row.nombre_semestre, {
-          nombre: row.nombre_semestre,
-          descripcion: row.semestre_descripcion,
-          unidades: []
-        });
-      }
-
-      if (row.unidad_id) {
-        periodo.semestres.get(row.nombre_semestre).unidades.push({
-          id: row.unidad_id,
-          nombre: row.nombre_unidad
-        });
-      }
-    });
-
-    // Convert Map to array and format response
-    const periodos = Array.from(periodosMap.values()).map(periodo => ({
-      ...periodo,
-      semestres: Array.from(periodo.semestres.values())
-    }));
-
-    res.json({
-      message: 'Periodos académicos recuperados exitosamente',
-      data: periodos
-    });
-
-  } catch (error) {
-    console.error('Error getting academic periods:', error);
-    res.status(500).json({ message: 'Error recuperando periodos académicos' });
-  }
-});
-
-// Attendance endpoints
-app.get('/asistencias/:dni', authenticateStudent, async (req, res) => {
-  try {
-    const [rows] = await pool.execute(`
-      SELECT 
-        a.id,
-        a.fecha_hora,
-        ea.estado,
-        h.nombre as horario_nombre,
-        ud.nombre_unidad
-      FROM asistencias a
-      INNER JOIN estado_asistencia ea ON a.estado_id = ea.estado_id
-      INNER JOIN horarios h ON a.horario_id = h.horario_id
-      INNER JOIN unidades_didacticas ud ON h.programa_id = ud.programa_id
-      WHERE a.dni_estudiante = ?
-      ORDER BY a.fecha_hora DESC
-    `, [req.params.dni]);
-
-    res.json({
-      message: 'Asistencias recuperadas exitosamente',
-      data: rows
-    });
-
-  } catch (error) {
-    console.error('Error getting attendance:', error);
-    res.status(500).json({ message: 'Error recuperando asistencias' });
-  }
-});
-
-// Payments endpoints
-app.get('/pagos/:dni', authenticateStudent, async (req, res) => {
-  try {
-    const [rows] = await pool.execute(`
-      SELECT 
-        p.*,
-        tp.nombre as tipo_pago_nombre,
-        tp.descripcion as tipo_pago_descripcion
-      FROM pagos p
-      LEFT JOIN tipos_pago tp ON p.tipo_pago = tp.nombre
-      WHERE p.dni_estudiante = ?
-      ORDER BY p.fecha DESC
-    `, [req.params.dni]);
-
-    res.json({
-      message: 'Pagos recuperados exitosamente',
-      data: rows
-    });
-
-  } catch (error) {
-    console.error('Error getting payments:', error);
-    res.status(500).json({ message: 'Error recuperando pagos' });
-  }
-});
-
-app.get('/tipos-pago', async (req, res) => {
-  try {
-    const [rows] = await pool.execute(`
-      SELECT 
-        tipo_id,
-        nombre,
-        descripcion,
-        monto_referencial,
-        codigo_tupa
-      FROM tipos_pago
-      ORDER BY nombre
-    `);
-
-    res.json({
-      message: 'Tipos de pago recuperados exitosamente',
-      data: rows
-    });
-
-  } catch (error) {
-    console.error('Error getting payment types:', error);
-    res.status(500).json({ message: 'Error recuperando tipos de pago' });
-  }
-});
-
-// Profile image endpoints
-app.post('/estudiante/:dni/imagen', authenticateStudent, uploads.profile.single('imagen'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No se proporcionó imagen' });
-    }
-
-    await pool.execute(
-      'UPDATE estudiantes SET imagen_url = ? WHERE dni = ?',
-      [req.file.filename, req.params.dni]
+    const [rows] = await connection.execute(
+      'SELECT qr_code_path FROM qr_codes WHERE dni_estudiante = ?',
+      [dni]
     );
 
-    res.status(200).json({ 
-      message: 'Imagen de perfil actualizada exitosamente',
-      url: req.file.filename
-    });
-  } catch (error) {
-    console.error('Error uploading profile image:', error);
-    res.status(500).json({ message: 'Error subiendo imagen de perfil' });
-  }
-});
-
-app.get('/estudiante/:dni/imagen', authenticateStudent, async (req, res) => {
-  try {
-    const [rows] = await pool.execute(
-      'SELECT imagen_url FROM estudiantes WHERE dni = ?',
-      [req.params.dni]
-    );
-
-    if (rows.length > 0 && rows[0].imagen_url) {
-      const imagePath = path.join(PROFILE_IMAGES_DIR, rows[0].imagen_url);
-      try {
-        await fs.access(imagePath);
-        res.sendFile(imagePath);
-      } catch {
-        res.status(404).json({ message: 'Imagen no encontrada' });
-      }
+    if (rows.length > 0 && rows[0].qr_code_path) {
+      const qrCodePath = rows[0].qr_code_path;
+      const qrCodeUrl = `${BASE_URL}${QR_PATH}${path.basename(qrCodePath)}`;
+      res.json({ qr_code_url: qrCodeUrl });
     } else {
-      res.status(404).json({ message: 'No hay imagen de perfil' });
+      res.status(404).json({ message: 'Código QR no encontrado' });
     }
   } catch (error) {
-    console.error('Error getting profile image:', error);
-    res.status(500).json({ message: 'Error recuperando imagen de perfil' });
+    console.error('Error al obtener QR:', error);
+    res.status(500).json({ message: 'Error en el servidor', error: error.message });
+  } finally {
+    connection.release();
   }
 });
 
-// Start server with proper port binding for Railway
-const port = process.env.PORT || 3000;
-const server = app.listen(port, '0.0.0.0', () => {
-  console.log(`Server running on port ${port}`);
+// Endpoint de justificación
+app.post('/justificacion', upload.array('imagenes', 2), dbMiddleware, async (req, res) => {
+  const { 
+    dni_estudiante, 
+    tipo_justificacion,
+    motivo_estudiante,
+    fecha_inicio,
+    fecha_fin 
+  } = req.body;
+  const connection = req.db;
+
+  if (!dni_estudiante || !tipo_justificacion || !motivo_estudiante || 
+      !fecha_inicio || !fecha_fin || !req.files || req.files.length === 0) {
+    return res.status(400).json({ 
+      message: 'Todos los campos son requeridos (DNI, tipo, motivo, fechas e imágenes)' 
+    });
+  }
+
+  try {
+    await connection.beginTransaction();
+
+    // 1. Subir las imágenes
+    const uploadedImages = await Promise.all(
+      req.files.map(file => 
+        uploadImageToPhp(file.buffer, file.originalname)
+      )
+    );
+
+    // 2. Insertar la justificación
+    const [justificacionResult] = await connection.execute(`
+      INSERT INTO justificaciones (
+        dni_estudiante, 
+        Fecha_Justificacion, 
+        TipoJustificacionID,
+        MotivoEstudiante,
+        Fecha_Inicio,
+        Fecha_Fin,
+        Estado
+      ) VALUES (?, ?, ?, ?, ?, ?, 'Pendiente')
+    `, [
+      dni_estudiante,
+      new Date(),
+      tipo_justificacion,
+      motivo_estudiante,
+      new Date(fecha_inicio),
+      new Date(fecha_fin)
+    ]);
+
+    const justificacionID = justificacionResult.insertId;
+
+    // 3. Insertar referencias de imágenes
+    for (const image of uploadedImages) {
+      await connection.execute(`
+        INSERT INTO Jimg (
+          JustificacionID, 
+          NombreArchivo, 
+          FechaSubida,
+          RutaArchivo,
+          TipoArchivo
+        ) VALUES (?, ?, ?, ?, ?)
+      `, [
+        justificacionID,
+        image.filename,
+        new Date(),
+        image.url,
+        'image/jpeg'
+      ]);
+    }
+
+    await connection.commit();
+
+    res.status(201).json({
+      message: 'Justificación registrada exitosamente',
+      data: {
+        justificacionID,
+        imageUrls: uploadedImages.map(img => img.url),
+        fecha: new Date()
+      }
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error al registrar justificación:', error);
+    res.status(500).json({
+      message: 'Error al procesar la justificación',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM signal received: closing HTTP server');
-  server.close(() => {
-    console.log('HTTP server closed');
-    pool.end().then(() => {
-      console.log('Database pool closed');
-      process.exit(0);
-    });
-  });
+// Iniciar servidor
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Servidor corriendo en el puerto ${port}`);
 });
