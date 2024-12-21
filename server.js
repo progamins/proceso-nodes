@@ -97,26 +97,51 @@ async function uploadImageToPhp(imageBuffer, originalname) {
 app.post('/login', async (req, res) => {
   const { usuario, clave } = req.body;
 
+  console.log('Login attempt for user:', usuario);
+
   if (!usuario || !clave) {
-    return res.status(400).send({ message: 'Username and password are required' });
+    console.log('Missing credentials');
+    return res.status(400).json({ 
+      message: 'Usuario y contraseña son requeridos' 
+    });
   }
 
   try {
     const [rows] = await pool.execute(
       'SELECT * FROM estudiantes WHERE usuario = ? AND clave = ?',
-      [usuario, clave]
+      [usuario.trim(), clave.trim()]
     );
 
+    console.log('Query result rows:', rows.length);
+
     if (rows.length > 0) {
-      res.send({ message: 'Login successful', data: rows[0] });
+      const userData = {
+        dni: rows[0].dni,
+        nombre: rows[0].nombre,
+        email: rows[0].email
+        // Add other necessary user data
+      };
+
+      console.log('Login successful for user:', userData.dni);
+      
+      res.json({
+        message: 'Inicio de sesión exitoso',
+        data: userData
+      });
     } else {
-      res.status(401).send({ message: 'Invalid credentials' });
+      console.log('Invalid credentials for user:', usuario);
+      res.status(401).json({ 
+        message: 'Credenciales inválidas' 
+      });
     }
   } catch (err) {
-    res.status(500).send({ message: 'Server error', error: err.message });
+    console.error('Database error during login:', err);
+    res.status(500).json({ 
+      message: 'Error en el servidor', 
+      error: err.message 
+    });
   }
 });
-
 // Get student profile image
 app.get('/estudiante/:dni/imagen', async (req, res) => {
   try {
