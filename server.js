@@ -15,6 +15,21 @@ const UPLOADS_PATH = '/uploads/';
 const IMAGES_PATH = '/imagenesJ/';
 const QR_PATH = '/qr_codes/';
 
+// Configuración de multer para archivos en memoria
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB límite
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Solo se permiten archivos de imagen'));
+    }
+  }
+});
+
 // Crear la carpeta para las imágenes de perfil si no existe
 const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
 fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
@@ -100,10 +115,20 @@ async function uploadImageToPhp(imageBuffer, originalname) {
     throw new Error('Error al subir imagen al servidor PHP');
   }
 }
+// Configuración CORS
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Disposition'],
+  credentials: true
+}));
+
+app.use(bodyParser.json());
 
 // Endpoints base
 app.get('/status', (req, res) => res.send({ message: 'Servidor activo y en funcionamiento' }));
-
+// Endpoint de login
 // Endpoint de login
 app.post('/login', dbMiddleware, async (req, res) => {
   const { usuario, clave } = req.body;
@@ -127,7 +152,6 @@ app.post('/login', dbMiddleware, async (req, res) => {
     connection.release();
   }
 });
-
 // Endpoint para obtener horario
 app.get('/horario/:programaId', dbMiddleware, async (req, res) => {
   const { programaId } = req.params;
@@ -299,6 +323,7 @@ app.post('/justificacion', upload.array('imagenes', 2), dbMiddleware, async (req
     connection.release();
   }
 });
+
 
 // Iniciar servidor
 const port = process.env.PORT || 3000;
