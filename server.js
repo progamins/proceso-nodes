@@ -38,7 +38,128 @@ const profileImageStorage = multer.diskStorage({
     cb(null, `${dni}${fileExt}`);
   }
 });
+app.get('/estudiante/:dni', async (req, res) => {
+  try {
+    const [studentRows] = await pool.execute(`
+      SELECT 
+        e.nombre,
+        e.programa,
+        e.dni,
+        e.email as correo_personal,
+        e.email_corporativo as correo_institucional,
+        e.celular as telefonos,
+        e.direccion,
+        e.semestre_actual,
+        e.programa_id
+      FROM estudiantes e
+      WHERE e.dni = ?
+    `, [req.params.dni]);
 
+    if (studentRows.length === 0) {
+      return res.status(404).json({ 
+        message: 'Estudiante no encontrado' 
+      });
+    }
+
+    const student = studentRows[0];
+
+    // Get current academic period
+    const [periodRows] = await pool.execute(`
+      SELECT 
+        periodo_id,
+        nombre as periodo_nombre,
+        fecha_inicio,
+        fecha_fin
+      FROM periodos_academicos
+      WHERE estado = 1 AND NOW() BETWEEN fecha_inicio AND fecha_fin
+      LIMIT 1
+    `);
+
+    const periodo = periodRows[0] || null;
+
+    // Get educational units if we have a valid period
+    let unidades = [];
+    if (periodo) {
+      const [unitRows] = await pool.execute(`
+        SELECT 
+          ud.unidad_id,
+          ud.nombre_unidad,
+          ts.nombre_semestre,
+          ts.descripcion as semestre_descripcion
+        FROM unidades_didacticas ud
+        INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
+        WHERE ud.programa_id = ? 
+        AND ud.periodo_id = ?
+        AND ud.semestre_id = ?
+      `, [student.programa_id, periodo.periodo_id, student.semestre_actual]);
+
+      unidades = unitRows;
+    }
+
+    res.json({
+      message: 'Datos del estudiante obtenidos',
+      data: {
+        nombre: student.nombre,
+        programa: student.programa,
+        dni: student.dni,
+        correo_institucional: student.correo_institucional || 'No disponible',
+        correo_personal: student.correo_personal || 'No disponible',
+        telefonos: student.telefonos || 'No disponible',
+        direccion: student.direccion || 'No disponible',
+        semestre_actual: student.semestre_actual,
+        periodo_academico: periodo ? {
+          id: periodo.periodo_id,
+          nombre: periodo.periodo_nombre,
+          fecha_inicio: periodo.fecha_inicio,
+          fecha_fin: periodo.fecha_fin
+        } : null,
+        unidades_didacticas: unidades
+      }
+    });
+
+  } catch (error) {
+    console.error('Error getting student data:', error);
+    res.status(500).json({ 
+      message: 'Error al obtener datos del estudiante',
+      error: error.message
+    });
+  }
+});
+
+// Get student QR code endpoint
+app.get('/estudiante/:dni/qr_code', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT qr_code_path FROM qr_codes WHERE dni_estudiante = ?',
+      [req.params.dni]
+    );
+
+    if (rows.length > 0 && rows[0].qr_code_path) {
+      // Construir la URL completa del QR
+      const qrUrl = `${PHP_URL}/qr_codes/${rows[0].qr_code_path}`;
+      
+      // Verificar que el archivo existe
+      try {
+        await axios.head(qrUrl);
+        res.json({ qr_code_url: qrUrl });
+      } catch (error) {
+        res.status(404).json({ 
+          message: 'Archivo QR no encontrado en el servidor' 
+        });
+      }
+    } else {
+      res.status(404).json({ 
+        message: 'No se encontró código QR para este estudiante' 
+      });
+    }
+  } catch (error) {
+    console.error('Error getting QR code:', error);
+    res.status(500).json({ 
+      message: 'Error al obtener el código QR', 
+      error: error.message 
+    });
+  }
+});
 const uploadProfileImage = multer({ 
   storage: profileImageStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
