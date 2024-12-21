@@ -142,6 +142,14 @@ app.post('/login', async (req, res) => {
     });
   }
 });
+app.get('/test-db', async (req, res) => {
+  try {
+    const [rows] = await pool.execute('SELECT 1 as test');
+    res.json({ message: 'Database connection successful', data: rows });
+  } catch (err) {
+    res.status(500).json({ message: 'Database connection failed', error: err.message });
+  }
+});
 // Get student profile image
 app.get('/estudiante/:dni/imagen', async (req, res) => {
   try {
