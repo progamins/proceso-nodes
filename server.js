@@ -40,30 +40,23 @@ const profileImageStorage = multer.diskStorage({
 });
 app.get('/estudiante/:dni', async (req, res) => {
   try {
+    // Obtener datos básicos del estudiante
     const [studentRows] = await pool.execute(`
       SELECT 
-        e.nombre,
-        e.programa,
-        e.dni,
-        e.email as correo_personal,
-        e.email_corporativo as correo_institucional,
-        e.celular as telefonos,
-        e.direccion,
-        e.semestre_actual,
-        e.programa_id
+        e.*,
+        pe.nombre_programa
       FROM estudiantes e
+      LEFT JOIN programas_estudio pe ON e.programa_id = pe.programa_id
       WHERE e.dni = ?
     `, [req.params.dni]);
 
     if (studentRows.length === 0) {
-      return res.status(404).json({ 
-        message: 'Estudiante no encontrado' 
-      });
+      return res.status(404).json({ message: 'Estudiante no encontrado' });
     }
 
     const student = studentRows[0];
 
-    // Get current academic period
+    // Obtener el periodo académico actual
     const [periodRows] = await pool.execute(`
       SELECT 
         periodo_id,
@@ -71,15 +64,15 @@ app.get('/estudiante/:dni', async (req, res) => {
         fecha_inicio,
         fecha_fin
       FROM periodos_academicos
-      WHERE estado = 1 AND NOW() BETWEEN fecha_inicio AND fecha_fin
+      WHERE estado = 1 
+      AND CURRENT_DATE BETWEEN fecha_inicio AND fecha_fin
+      ORDER BY fecha_inicio DESC
       LIMIT 1
     `);
 
-    const periodo = periodRows[0] || null;
-
-    // Get educational units if we have a valid period
+    // Obtener unidades didácticas si existe un periodo activo
     let unidades = [];
-    if (periodo) {
+    if (periodRows.length > 0) {
       const [unitRows] = await pool.execute(`
         SELECT 
           ud.unidad_id,
@@ -91,27 +84,32 @@ app.get('/estudiante/:dni', async (req, res) => {
         WHERE ud.programa_id = ? 
         AND ud.periodo_id = ?
         AND ud.semestre_id = ?
-      `, [student.programa_id, periodo.periodo_id, student.semestre_actual]);
+      `, [
+        student.programa_id, 
+        periodRows[0].periodo_id,
+        student.semestre_actual || 1
+      ]);
 
       unidades = unitRows;
     }
 
+    // Estructura de respuesta que coincide con el frontend
     res.json({
       message: 'Datos del estudiante obtenidos',
       data: {
         nombre: student.nombre,
-        programa: student.programa,
+        programa: student.programa || student.nombre_programa,
         dni: student.dni,
-        correo_institucional: student.correo_institucional || 'No disponible',
-        correo_personal: student.correo_personal || 'No disponible',
-        telefonos: student.telefonos || 'No disponible',
+        correo_institucional: student.email_corporativo || 'No disponible',
+        correo_personal: student.email || 'No disponible',
+        telefonos: student.celular || 'No disponible',
         direccion: student.direccion || 'No disponible',
         semestre_actual: student.semestre_actual,
-        periodo_academico: periodo ? {
-          id: periodo.periodo_id,
-          nombre: periodo.periodo_nombre,
-          fecha_inicio: periodo.fecha_inicio,
-          fecha_fin: periodo.fecha_fin
+        periodo_academico: periodRows.length > 0 ? {
+          id: periodRows[0].periodo_id,
+          nombre: periodRows[0].periodo_nombre,
+          fecha_inicio: periodRows[0].fecha_inicio,
+          fecha_fin: periodRows[0].fecha_fin
         } : null,
         unidades_didacticas: unidades
       }
@@ -119,7 +117,7 @@ app.get('/estudiante/:dni', async (req, res) => {
 
   } catch (error) {
     console.error('Error getting student data:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Error al obtener datos del estudiante',
       error: error.message
     });
@@ -135,31 +133,36 @@ app.get('/estudiante/:dni/qr_code', async (req, res) => {
     );
 
     if (rows.length > 0 && rows[0].qr_code_path) {
-      // Construir la URL completa del QR
-      const qrUrl = `${PHP_URL}/qr_codes/${rows[0].qr_code_path}`;
+      // La URL del QR se construye usando el path almacenado
+      const qrCodeUrl = `${PHP_URL}/${rows[0].qr_code_path}`;
       
-      // Verificar que el archivo existe
+      // Verificar que el QR existe
       try {
-        await axios.head(qrUrl);
-        res.json({ qr_code_url: qrUrl });
+        await axios.head(qrCodeUrl);
+        res.json({
+          qr_code_url: qrCodeUrl,
+          message: 'QR encontrado'
+        });
       } catch (error) {
-        res.status(404).json({ 
-          message: 'Archivo QR no encontrado en el servidor' 
+        console.error('Error verificando QR:', error);
+        res.status(404).json({
+          message: 'QR no encontrado en el servidor'
         });
       }
     } else {
-      res.status(404).json({ 
-        message: 'No se encontró código QR para este estudiante' 
+      res.status(404).json({
+        message: 'No se encontró QR para este estudiante'
       });
     }
   } catch (error) {
-    console.error('Error getting QR code:', error);
-    res.status(500).json({ 
-      message: 'Error al obtener el código QR', 
-      error: error.message 
+    console.error('Error obteniendo QR:', error);
+    res.status(500).json({
+      message: 'Error al obtener el QR',
+      error: error.message
     });
   }
 });
+
 const uploadProfileImage = multer({ 
   storage: profileImageStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
