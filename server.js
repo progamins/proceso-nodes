@@ -18,18 +18,24 @@ fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
   .then(() => console.log('Profile images directory created'))
   .catch(console.error);
 
+// Load environment variables
+require('dotenv').config();
+
 // MySQL Connection Pool
 const pool = mysql.createPool({
-  host: '162.241.61.0',
-  user: 'iestpasi_edwin',
-  password: 'EDWINrosas774433)',
-  database: 'iestpasi_iestp',
+  host: process.env.DB_HOST || '162.241.61.0',
+  user: process.env.DB_USER || 'iestpasi_edwin',
+  password: process.env.DB_PASSWORD || 'EDWINrosas774433)',
+  database: process.env.DB_NAME || 'iestpasi_iestp',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
   ssl: {
-    rejectUnauthorized: false
-  }
+    rejectUnauthorized: false,
+    enableTrace: false
+  },
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0
 });
 
 // Test database connection
