@@ -20,10 +20,10 @@ fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
 
 // MySQL Connection Pool Configuration
 const pool = mysql.createPool({
-  host: '162.241.61.0',
-  user: 'iestpasi_edwin',
-  password: 'EDWINrosas774433)',
-  database: 'iestpasi_iestp',
+  host: process.env.DB_HOST || '162.241.61.0',
+  user: process.env.DB_USER || 'iestpasi_edwin',
+  password: process.env.DB_PASSWORD || 'EDWINrosas774433)',
+  database: process.env.DB_DATABASE || 'iestpasi_iestp',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
