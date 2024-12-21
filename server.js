@@ -196,6 +196,30 @@ app.get('/estudiante/:dni/qr_code', async (req, res) => {
     res.status(500).json({ message: 'Error en el servidor', error: err.message });
   }
 });
+// Login endpoint
+app.post('/login', async (req, res) => {
+  const { usuario, clave } = req.body;
+
+  if (!usuario || !clave) {
+    return res.status(400).send({ message: 'Username and password are required' });
+  }
+
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM estudiantes WHERE usuario = ? AND clave = ?',
+      [usuario, clave]
+    );
+
+    if (rows.length > 0) {
+      res.send({ message: 'Login successful', data: rows[0] });
+    } else {
+      res.status(401).send({ message: 'Invalid credentials' });
+    }
+  } catch (err) {
+    res.status(500).send({ message: 'Server error', error: err.message });
+  }
+});
+
 // Get student profile image
 app.get('/estudiante/:dni/imagen', async (req, res) => {
   try {
