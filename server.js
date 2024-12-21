@@ -7,7 +7,14 @@ const multer = require('multer');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs').promises;
+
+// Inicialización de express
 const app = express();
+let server = null;
+
+// Variables de estado
+let isShuttingDown = false;
+let pool = null;
 
 // Constantes para las URLs
 const BASE_URL = 'https://www.iestpasist.com';
@@ -30,62 +37,94 @@ const upload = multer({
   }
 });
 
-// Crear la carpeta para las imágenes de perfil si no existe
-const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
-fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
-  .then(() => console.log('Directorio de imágenes de perfil creado'))
-  .catch(console.error);
+// Directorio temporal para Railway
+const PROFILE_IMAGES_DIR = process.env.NODE_ENV === 'production' 
+  ? path.join('/tmp', 'profile_images')
+  : path.join(__dirname, 'profile_images');
 
 // Configuración de la base de datos MySQL
 const dbConfig = {
-  host: '162.241.61.0',
-  user: 'iestpasi_edwin',
-  password: 'EDWINrosas774433)',
-  database: 'iestpasi_iestp',
+  host: process.env.DB_HOST || '162.241.61.0',
+  user: process.env.DB_USER || 'iestpasi_edwin',
+  password: process.env.DB_PASSWORD || 'EDWINrosas774433)',
+  database: process.env.DB_NAME || 'iestpasi_iestp',
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  connectTimeout: 30000,
 };
 
-// Crear pool de conexiones
-const pool = mysql.createPool(dbConfig);
-
-// Middleware para manejar errores de conexión
-const dbMiddleware = async (req, res, next) => {
+// Función para crear directorio de imágenes
+async function ensureDirectoryExists() {
   try {
+    await fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true });
+    console.log('Directorio de imágenes de perfil creado:', PROFILE_IMAGES_DIR);
+  } catch (error) {
+    console.error('Error al crear directorio:', error);
+  }
+}
+
+// Inicializar pool de conexiones
+async function initializeDatabase() {
+  try {
+    if (!pool) {
+      pool = mysql.createPool(dbConfig);
+      // Verificar conexión
+      const connection = await pool.getConnection();
+      connection.release();
+      console.log('Conexión a la base de datos establecida exitosamente');
+    }
+    return pool;
+  } catch (error) {
+    console.error('Error al inicializar la base de datos:', error);
+    // Reintentar en 5 segundos
+    setTimeout(initializeDatabase, 5000);
+  }
+}
+
+// Middleware de base de datos mejorado
+const dbMiddleware = async (req, res, next) => {
+  if (isShuttingDown) {
+    return res.status(503).json({ message: 'Servidor en proceso de apagado' });
+  }
+
+  try {
+    if (!pool) {
+      await initializeDatabase();
+    }
     req.db = await pool.getConnection();
+    req.on('end', () => req.db?.release());
+    req.on('error', () => req.db?.release());
     next();
-  } catch (err) {
-    console.error('Error de conexión a la base de datos:', err);
+  } catch (error) {
+    console.error('Error de conexión a la base de datos:', error);
     res.status(500).json({ message: 'Error de conexión a la base de datos' });
   }
 };
 
-// Configuración de multer para imágenes de perfil
-const profileImageStorage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, PROFILE_IMAGES_DIR)
-  },
-  filename: function (req, file, cb) {
-    const dni = req.params.dni;
-    const fileExt = path.extname(file.originalname);
-    cb(null, `${dni}${fileExt}`);
-  }
+// Middleware de error global
+app.use((err, req, res, next) => {
+  console.error('Error no manejado:', err);
+  res.status(500).json({ 
+    message: 'Error interno del servidor',
+    error: process.env.NODE_ENV === 'production' ? 'Error interno' : err.message
+  });
 });
 
-const uploadProfileImage = multer({ 
-  storage: profileImageStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const filetypes = /jpeg|jpg|png/;
-    const mimetype = filetypes.test(file.mimetype);
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    if (mimetype && extname) return cb(null, true);
-    cb(new Error('Solo se permiten archivos de imagen (jpeg, jpg, png)'));
-  }
-});
+// Configuración CORS
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Content-Disposition'],
+  credentials: true
+}));
 
-// Función para subir imagen al nuevo servidor PHP
+app.use(bodyParser.json());
+
+// Función para subir imagen al servidor PHP
 async function uploadImageToPhp(imageBuffer, originalname) {
   try {
     const formData = new FormData();
@@ -115,17 +154,16 @@ async function uploadImageToPhp(imageBuffer, originalname) {
     throw new Error('Error al subir imagen al servidor PHP');
   }
 }
-// Configuración CORS
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  exposedHeaders: ['Content-Disposition'],
-  credentials: true
-}));
 
-app.use(bodyParser.json());
-
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    database: pool ? 'connected' : 'disconnected'
+  });
+});
 // Endpoints base
 app.get('/status', (req, res) => res.send({ message: 'Servidor activo y en funcionamiento' }));
 // Endpoint de login
@@ -324,9 +362,87 @@ app.post('/justificacion', upload.array('imagenes', 2), dbMiddleware, async (req
   }
 });
 
+// Función de cierre graceful
+async function gracefulShutdown(signal) {
+  console.log(`\nRecibida señal ${signal}. Iniciando apagado graceful...`);
+  isShuttingDown = true;
 
-// Iniciar servidor
-const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`Servidor corriendo en el puerto ${port}`);
+  if (!server) {
+    process.exit(0);
+  }
+
+  try {
+    // Cerrar servidor HTTP
+    await new Promise((resolve, reject) => {
+      server.close((err) => {
+        if (err) {
+          console.error('Error al cerrar servidor HTTP:', err);
+          reject(err);
+        } else {
+          console.log('Servidor HTTP cerrado correctamente');
+          resolve();
+        }
+      });
+    });
+
+    // Cerrar pool de conexiones
+    if (pool) {
+      await pool.end();
+      console.log('Pool de conexiones cerrado correctamente');
+    }
+
+    console.log('Apagado graceful completado');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error durante el apagado graceful:', error);
+    process.exit(1);
+  }
+}
+
+// Manejo de señales
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Manejo de errores no capturados
+process.on('uncaughtException', (error) => {
+  console.error('Error no capturado:', error);
+  gracefulShutdown('uncaughtException');
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Promesa rechazada no manejada:', reason);
+});
+
+// Función de inicio del servidor
+async function startServer() {
+  try {
+    // Asegurar que existe el directorio de imágenes
+    await ensureDirectoryExists();
+    
+    // Inicializar base de datos
+    await initializeDatabase();
+    
+    // Iniciar servidor HTTP
+    const PORT = process.env.PORT || 8080;
+    server = app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Servidor corriendo en el puerto ${PORT}`);
+    });
+
+    // Configurar timeouts
+    server.keepAliveTimeout = 65000;
+    server.headersTimeout = 66000;
+
+    // Manejar errores del servidor
+    server.on('error', (error) => {
+      console.error('Error en el servidor:', error);
+      process.exit(1);
+    });
+
+  } catch (error) {
+    console.error('Error al iniciar el servidor:', error);
+    process.exit(1);
+  }
+}
+
+// Iniciar el servidor
+startServer();
