@@ -7,16 +7,20 @@ const multer = require('multer');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs').promises;
-const app = express();
 
-// Base URL for PHP server
+const app = express();
 const PHP_URL = 'https://www.iestpasist.com';
 
-// Create profile images directory if it doesn't exist
+// Create directories if they don't exist
+const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
-fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
-  .then(() => console.log('Profile images directory created'))
-  .catch(console.error);
+const JUSTIFICATION_DOCS_DIR = path.join(__dirname, 'justification_docs');
+
+Promise.all([
+  fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true }),
+  fs.mkdir(JUSTIFICATION_DOCS_DIR, { recursive: true }),
+  fs.mkdir(UPLOADS_DIR, { recursive: true })
+]).then(() => console.log('Directories created')).catch(console.error);
 
 // MySQL Connection Pool Configuration
 const pool = mysql.createPool({
@@ -29,153 +33,48 @@ const pool = mysql.createPool({
   queueLimit: 0
 });
 
-// Multer configuration for profile images
-const profileImageStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, PROFILE_IMAGES_DIR),
-  filename: (req, file, cb) => {
-    const dni = req.params.dni;
-    const fileExt = path.extname(file.originalname);
-    cb(null, `${dni}${fileExt}`);
-  }
-});
-app.get('/estudiante/:dni', async (req, res) => {
-  try {
-    // Obtener datos básicos del estudiante
-    const [studentRows] = await pool.execute(`
-      SELECT 
-        e.*,
-        pe.nombre_programa
-      FROM estudiantes e
-      LEFT JOIN programas_estudio pe ON e.programa_id = pe.programa_id
-      WHERE e.dni = ?
-    `, [req.params.dni]);
-
-    if (studentRows.length === 0) {
-      return res.status(404).json({ message: 'Estudiante no encontrado' });
+// Configure multer for different upload types
+const storage = {
+  profile: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, PROFILE_IMAGES_DIR),
+    filename: (req, file, cb) => {
+      const dni = req.params.dni;
+      const fileExt = path.extname(file.originalname);
+      cb(null, `${dni}${fileExt}`);
     }
-
-    const student = studentRows[0];
-
-    // Obtener el periodo académico actual
-    const [periodRows] = await pool.execute(`
-      SELECT 
-        periodo_id,
-        nombre as periodo_nombre,
-        fecha_inicio,
-        fecha_fin
-      FROM periodos_academicos
-      WHERE estado = 1 
-      AND CURRENT_DATE BETWEEN fecha_inicio AND fecha_fin
-      ORDER BY fecha_inicio DESC
-      LIMIT 1
-    `);
-
-    // Obtener unidades didácticas si existe un periodo activo
-    let unidades = [];
-    if (periodRows.length > 0) {
-      const [unitRows] = await pool.execute(`
-        SELECT 
-          ud.unidad_id,
-          ud.nombre_unidad,
-          ts.nombre_semestre,
-          ts.descripcion as semestre_descripcion
-        FROM unidades_didacticas ud
-        INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
-        WHERE ud.programa_id = ? 
-        AND ud.periodo_id = ?
-        AND ud.semestre_id = ?
-      `, [
-        student.programa_id, 
-        periodRows[0].periodo_id,
-        student.semestre_actual || 1
-      ]);
-
-      unidades = unitRows;
+  }),
+  justification: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, JUSTIFICATION_DOCS_DIR),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, `${uniqueSuffix}-${file.originalname}`);
     }
+  })
+};
 
-    // Estructura de respuesta que coincide con el frontend
-    res.json({
-      message: 'Datos del estudiante obtenidos',
-      data: {
-        nombre: student.nombre,
-        programa: student.programa || student.nombre_programa,
-        dni: student.dni,
-        correo_institucional: student.email_corporativo || 'No disponible',
-        correo_personal: student.email || 'No disponible',
-        telefonos: student.celular || 'No disponible',
-        direccion: student.direccion || 'No disponible',
-        semestre_actual: student.semestre_actual,
-        periodo_academico: periodRows.length > 0 ? {
-          id: periodRows[0].periodo_id,
-          nombre: periodRows[0].periodo_nombre,
-          fecha_inicio: periodRows[0].fecha_inicio,
-          fecha_fin: periodRows[0].fecha_fin
-        } : null,
-        unidades_didacticas: unidades
-      }
-    });
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = /jpeg|jpg|png|pdf/;
+  const mimetype = allowedTypes.test(file.mimetype);
+  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+  
+  if (mimetype && extname) return cb(null, true);
+  cb(new Error('Invalid file type. Only JPEG, JPG, PNG and PDF files are allowed'));
+};
 
-  } catch (error) {
-    console.error('Error getting student data:', error);
-    res.status(500).json({
-      message: 'Error al obtener datos del estudiante',
-      error: error.message
-    });
-  }
-});
+const uploads = {
+  profile: multer({ 
+    storage: storage.profile,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter
+  }),
+  justification: multer({ 
+    storage: storage.justification,
+    limits: { fileSize: 10 * 1024 * 1024 },
+    fileFilter
+  })
+};
 
-// Get student QR code endpoint
-app.get('/estudiante/:dni/qr_code', async (req, res) => {
-  try {
-    const [rows] = await pool.execute(
-      'SELECT qr_code_path FROM qr_codes WHERE dni_estudiante = ?',
-      [req.params.dni]
-    );
-
-    if (rows.length > 0 && rows[0].qr_code_path) {
-      // La URL del QR se construye usando el path almacenado
-      const qrCodeUrl = `${PHP_URL}/${rows[0].qr_code_path}`;
-      
-      // Verificar que el QR existe
-      try {
-        await axios.head(qrCodeUrl);
-        res.json({
-          qr_code_url: qrCodeUrl,
-          message: 'QR encontrado'
-        });
-      } catch (error) {
-        console.error('Error verificando QR:', error);
-        res.status(404).json({
-          message: 'QR no encontrado en el servidor'
-        });
-      }
-    } else {
-      res.status(404).json({
-        message: 'No se encontró QR para este estudiante'
-      });
-    }
-  } catch (error) {
-    console.error('Error obteniendo QR:', error);
-    res.status(500).json({
-      message: 'Error al obtener el QR',
-      error: error.message
-    });
-  }
-});
-
-const uploadProfileImage = multer({ 
-  storage: profileImageStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const filetypes = /jpeg|jpg|png/;
-    const mimetype = filetypes.test(file.mimetype);
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    if (mimetype && extname) return cb(null, true);
-    cb(new Error('Only image files (jpeg, jpg, png) are allowed'));
-  }
-});
-
-// CORS configuration
+// CORS and body parser middleware
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -186,143 +85,148 @@ app.use(cors({
 
 app.use(bodyParser.json());
 
-// Helper function to upload image to PHP server
-async function uploadImageToPhp(imageBuffer, originalname) {
+// Authentication middleware
+const authenticateStudent = async (req, res, next) => {
+  const dni = req.params.dni || req.body.dni;
+  if (!dni) return res.status(401).json({ message: 'Authentication required' });
+
   try {
-    const formData = new FormData();
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const filename = uniqueSuffix + '-' + originalname;
-    
-    formData.append('imagen', imageBuffer, {
-      filename: filename,
-      contentType: 'image/jpeg'
-    });
-
-    const response = await axios.post(`${PHP_URL}/upload.php`, formData, {
-      headers: {
-        ...formData.getHeaders(),
-      },
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
-    });
-
-    return {
-      success: true,
-      filename: filename,
-      url: `${PHP_URL}/imagenesJ/${filename}`
-    };
+    const [rows] = await pool.execute(
+      'SELECT id FROM estudiantes WHERE dni = ?',
+      [dni]
+    );
+    if (rows.length === 0) return res.status(401).json({ message: 'Unauthorized' });
+    req.studentId = rows[0].id;
+    next();
   } catch (error) {
-    console.error('Error uploading image:', error);
-    throw new Error('Error uploading image to PHP server');
+    console.error('Authentication error:', error);
+    res.status(500).json({ message: 'Server error during authentication' });
   }
-}
+};
 
 // Login endpoint
 app.post('/login', async (req, res) => {
   const { usuario, clave } = req.body;
 
-  console.log('Login attempt for user:', usuario);
-
   if (!usuario || !clave) {
-    console.log('Missing credentials');
-    return res.status(400).json({ 
-      message: 'Usuario y contraseña son requeridos' 
-    });
+    return res.status(400).json({ message: 'Usuario y contraseña son requeridos' });
   }
 
   try {
-    const [rows] = await pool.execute(
-      'SELECT * FROM estudiantes WHERE usuario = ? AND clave = ?',
-      [usuario.trim(), clave.trim()]
-    );
-
-    console.log('Query result rows:', rows.length);
+    const [rows] = await pool.execute(`
+      SELECT e.*, pe.nombre_programa, c.id as carnet_id, qr.qr_code_path
+      FROM estudiantes e
+      LEFT JOIN programas_estudio pe ON e.programa_id = pe.programa_id
+      LEFT JOIN carnet c ON e.dni = c.dni
+      LEFT JOIN qr_codes qr ON e.dni = qr.dni_estudiante
+      WHERE e.usuario = ? AND e.clave = ?
+    `, [usuario.trim(), clave.trim()]);
 
     if (rows.length > 0) {
       const userData = {
+        id: rows[0].id,
         dni: rows[0].dni,
         nombre: rows[0].nombre,
-        email: rows[0].email
-        // Add other necessary user data
+        email: rows[0].email,
+        programa: rows[0].nombre_programa,
+        carnet_id: rows[0].carnet_id,
+        qr_code: rows[0].qr_code_path
       };
 
-      console.log('Login successful for user:', userData.dni);
-      
       res.json({
         message: 'Inicio de sesión exitoso',
         data: userData
       });
     } else {
-      console.log('Invalid credentials for user:', usuario);
-      res.status(401).json({ 
-        message: 'Credenciales inválidas' 
+      res.status(401).json({ message: 'Credenciales inválidas' });
+    }
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ message: 'Error en el servidor', error: err.message });
+  }
+});
+
+// Student profile endpoints
+app.get('/estudiante/:dni/perfil', authenticateStudent, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        e.*,
+        pe.nombre_programa,
+        c.id as carnet_id,
+        qr.qr_code_path,
+        (
+          SELECT periodo_id 
+          FROM periodos_academicos 
+          WHERE estado = 1 
+          ORDER BY fecha_inicio DESC 
+          LIMIT 1
+        ) as periodo_actual
+      FROM estudiantes e
+      LEFT JOIN programas_estudio pe ON e.programa_id = pe.programa_id
+      LEFT JOIN carnet c ON e.dni = c.dni
+      LEFT JOIN qr_codes qr ON e.dni = qr.dni_estudiante
+      WHERE e.dni = ?
+    `, [req.params.dni]);
+
+    if (rows.length > 0) {
+      const studentData = rows[0];
+      res.json({
+        message: 'Perfil recuperado exitosamente',
+        data: studentData
       });
-    }
-  } catch (err) {
-    console.error('Database error during login:', err);
-    res.status(500).json({ 
-      message: 'Error en el servidor', 
-      error: err.message 
-    });
-  }
-});
-app.get('/test-db', async (req, res) => {
-  try {
-    const [rows] = await pool.execute('SELECT 1 as test');
-    res.json({ message: 'Database connection successful', data: rows });
-  } catch (err) {
-    res.status(500).json({ message: 'Database connection failed', error: err.message });
-  }
-});
-// Get student profile image
-app.get('/estudiante/:dni/imagen', async (req, res) => {
-  try {
-    const [rows] = await pool.execute(
-      'SELECT imagen_url FROM estudiantes WHERE dni = ?',
-      [req.params.dni]
-    );
-
-    if (rows.length > 0 && rows[0].imagen_url) {
-      const imagePath = path.join(PROFILE_IMAGES_DIR, rows[0].imagen_url);
-      try {
-        await fs.access(imagePath);
-        res.sendFile(imagePath);
-      } catch {
-        res.status(404).json({ message: 'Image not found' });
-      }
     } else {
-      res.status(404).json({ message: 'No profile image' });
+      res.status(404).json({ message: 'Estudiante no encontrado' });
     }
   } catch (error) {
-    console.error('Error getting profile image:', error);
-    res.status(500).json({ message: 'Error getting profile image' });
+    console.error('Error getting profile:', error);
+    res.status(500).json({ message: 'Error recuperando perfil' });
   }
 });
 
-// Update profile image
-app.post('/estudiante/:dni/imagen', uploadProfileImage.single('imagen'), async (req, res) => {
+app.put('/estudiante/:dni/update', authenticateStudent, async (req, res) => {
+  const { field, value } = req.body;
+  const allowedFields = ['email', 'celular', 'direccion'];
+
+  if (!allowedFields.includes(field)) {
+    return res.status(400).json({ message: 'Campo no permitido para actualización' });
+  }
+
   try {
-    if (!req.file) {
-      return res.status(400).json({ message: 'No image provided' });
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      await connection.execute(
+        `UPDATE estudiantes SET ${field} = ? WHERE dni = ?`,
+        [value, req.params.dni]
+      );
+
+      const [rows] = await connection.execute(
+        'SELECT email, celular, direccion FROM estudiantes WHERE dni = ?',
+        [req.params.dni]
+      );
+
+      await connection.commit();
+      res.json({
+        message: 'Campo actualizado exitosamente',
+        data: rows[0]
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
-
-    await pool.execute(
-      'UPDATE estudiantes SET imagen_url = ? WHERE dni = ?',
-      [req.file.filename, req.params.dni]
-    );
-
-    res.status(200).json({ 
-      message: 'Profile image updated successfully',
-      url: req.file.filename
-    });
   } catch (error) {
-    console.error('Error uploading profile image:', error);
-    res.status(500).json({ message: 'Error uploading profile image' });
+    console.error('Update error:', error);
+    res.status(500).json({ message: 'Error actualizando campo' });
   }
 });
 
-// Get student schedule
-app.get('/horario/:programaId', async (req, res) => {
+// Schedule endpoints
+app.get('/horario/:programaId', authenticateStudent, async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT 
@@ -330,7 +234,8 @@ app.get('/horario/:programaId', async (req, res) => {
         h.nombre,
         h.archivo,
         h.fecha_creacion,
-        pe.nombre_programa as programa_nombre
+        pe.nombre_programa,
+        h.semestre
       FROM horarios h
       INNER JOIN programas_estudio pe ON h.programa_id = pe.programa_id
       WHERE h.programa_id = ?
@@ -344,67 +249,54 @@ app.get('/horario/:programaId', async (req, res) => {
       try {
         await axios.head(horarioUrl);
         res.json({
-          message: 'Schedule found',
+          message: 'Horario encontrado',
           data: {
             ...horario,
             url: horarioUrl
           }
         });
       } catch (error) {
-        res.status(404).json({
-          message: 'PDF file not available',
-          error: error.message
-        });
+        res.status(404).json({ message: 'Archivo PDF no disponible' });
       }
     } else {
-      res.status(404).json({ 
-        message: 'No schedule found for this study program'
-      });
+      res.status(404).json({ message: 'No se encontró horario para este programa' });
     }
   } catch (error) {
-    console.error('Error getting schedule:', error);
-    res.status(500).json({
-      message: 'Error getting schedule',
-      error: error.message
-    });
+    console.error('Schedule error:', error);
+    res.status(500).json({ message: 'Error recuperando horario' });
   }
 });
 
-// Update student information
-app.put('/estudiante/:dni/update', async (req, res) => {
-  const { dni } = req.params;
-  const { field, value } = req.body;
-  const allowedFields = ['email', 'celular', 'direccion'];
-
-  if (!allowedFields.includes(field)) {
-    return res.status(400).json({
-      message: `Field not allowed for update: ${field}`
-    });
-  }
+// Justification endpoints
+app.post('/justificaciones', authenticateStudent, uploads.justification.array('documentos', 5), async (req, res) => {
+  const { dni_estudiante, tipo_justificacion, motivo, fecha_inicio, fecha_fin } = req.body;
 
   try {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
 
-      await connection.execute(
-        `UPDATE estudiantes SET ${field} = ? WHERE dni = ?`,
-        [value, dni]
-      );
+      const [result] = await connection.execute(`
+        INSERT INTO justificaciones 
+        (dni_estudiante, TipoJustificacionID, MotivoEstudiante, Fecha_Inicio, Fecha_Fin, Fecha_Justificacion)
+        VALUES (?, ?, ?, ?, ?, CURDATE())
+      `, [dni_estudiante, tipo_justificacion, motivo, fecha_inicio, fecha_fin]);
 
-      const [rows] = await connection.execute(
-        'SELECT email as correo_personal, celular as telefonos, direccion FROM estudiantes WHERE dni = ?',
-        [dni]
-      );
+      if (req.files && req.files.length > 0) {
+        const uploadPromises = req.files.map(file => 
+          connection.execute(`
+            INSERT INTO jimg (JustificacionID, NombreArchivo, RutaArchivo, FechaSubida)
+            VALUES (?, ?, ?, NOW())
+          `, [result.insertId, file.originalname, file.filename])
+        );
 
-      if (rows.length === 0) {
-        throw new Error('Student not found');
+        await Promise.all(uploadPromises);
       }
 
       await connection.commit();
       res.json({
-        message: 'Field updated successfully',
-        data: rows[0]
+        message: 'Justificación creada exitosamente',
+        data: { justificacionId: result.insertId }
       });
 
     } catch (error) {
@@ -414,16 +306,12 @@ app.put('/estudiante/:dni/update', async (req, res) => {
       connection.release();
     }
   } catch (error) {
-    console.error('Error in update:', error);
-    res.status(500).json({
-      message: 'Error updating field',
-      error: error.message
-    });
+    console.error('Justification creation error:', error);
+    res.status(500).json({ message: 'Error creando justificación' });
   }
 });
 
-// Get student justifications
-app.get('/justificaciones/:dni', async (req, res) => {
+app.get('/justificaciones/:dni', authenticateStudent, async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT 
@@ -439,7 +327,7 @@ app.get('/justificaciones/:dni', async (req, res) => {
         i.FechaSubida
       FROM justificaciones j
       INNER JOIN tipos_justificacion tj ON j.TipoJustificacionID = tj.TipoJustificacionID
-      LEFT JOIN Jimg i ON j.JustificacionID = i.JustificacionID
+      LEFT JOIN jimg i ON j.JustificacionID = i.JustificacionID
       WHERE j.dni_estudiante = ?
       ORDER BY j.Fecha_Justificacion DESC
     `, [req.params.dni]);
@@ -456,12 +344,12 @@ app.get('/justificaciones/:dni', async (req, res) => {
           fecha_inicio: record.Fecha_Inicio,
           fecha_fin: record.Fecha_Fin,
           estado: record.Estado,
-          imagenes: []
+          documentos: []
         });
       }
       
       if (record.RutaArchivo) {
-        justificacionesMap.get(record.JustificacionID).imagenes.push({
+        justificacionesMap.get(record.JustificacionID).documentos.push({
           nombre: record.NombreArchivo,
           url: record.RutaArchivo,
           fecha_subida: record.FechaSubida
@@ -470,21 +358,214 @@ app.get('/justificaciones/:dni', async (req, res) => {
     });
 
     res.json({
-      message: 'Justifications retrieved successfully',
+      message: 'Justificaciones recuperadas exitosamente',
       data: Array.from(justificacionesMap.values())
     });
 
   } catch (error) {
     console.error('Error getting justifications:', error);
-    res.status(500).json({
-      message: 'Error getting justifications',
-      error: error.message
+    res.status(500).json({ message: 'Error recuperando justificaciones' });
+  }
+});
+
+// Academic periods endpoint
+app.get('/periodos/:dni', authenticateStudent, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        pa.periodo_id,
+        pa.nombre as periodo_nombre,
+        pa.fecha_inicio,
+        pa.fecha_fin,
+        pa.estado,
+        ts.nombre_semestre,
+        ts.descripcion as semestre_descripcion,
+        ud.unidad_id,
+        ud.nombre_unidad
+      FROM periodos_academicos pa
+      CROSS JOIN JSON_TABLE(pa.semestres, '$[*]' COLUMNS (semestre_id INT PATH '$')) js
+      INNER JOIN tipo_semestre ts ON js.semestre_id = ts.semestre_id
+      INNER JOIN unidades_didacticas ud ON pa.periodo_id = ud.periodo_id
+      INNER JOIN estudiantes e ON e.programa_id = ud.programa_id
+      WHERE e.dni = ?
+      ORDER BY pa.fecha_inicio DESC, ts.semestre_id ASC
+    `, [req.params.dni]);
+
+    const periodosMap = new Map();
+    
+    rows.forEach(row => {
+      if (!periodosMap.has(row.periodo_id)) {
+        periodosMap.set(row.periodo_id, {
+          periodo_id: row.periodo_id,
+          nombre: row.periodo_nombre,
+          fecha_inicio: row.fecha_inicio,
+          fecha_fin: row.fecha_fin,
+          estado: row.estado,
+          semestres: new Map()
+        });
+      }
+
+      const periodo = periodosMap.get(row.periodo_id);
+      
+      if (!periodo.semestres.has(row.nombre_semestre)) {
+        periodo.semestres.set(row.nombre_semestre, {
+          nombre: row.nombre_semestre,
+          descripcion: row.semestre_descripcion,
+          unidades: []
+        });
+      }
+
+      if (row.unidad_id) {
+        periodo.semestres.get(row.nombre_semestre).unidades.push({
+          id: row.unidad_id,
+          nombre: row.nombre_unidad
+        });
+      }
     });
+
+    // Convert Map to array and format response
+    const periodos = Array.from(periodosMap.values()).map(periodo => ({
+      ...periodo,
+      semestres: Array.from(periodo.semestres.values())
+    }));
+
+    res.json({
+      message: 'Periodos académicos recuperados exitosamente',
+      data: periodos
+    });
+
+  } catch (error) {
+    console.error('Error getting academic periods:', error);
+    res.status(500).json({ message: 'Error recuperando periodos académicos' });
+  }
+});
+
+// Attendance endpoints
+app.get('/asistencias/:dni', authenticateStudent, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        a.id,
+        a.fecha_hora,
+        ea.estado,
+        h.nombre as horario_nombre,
+        ud.nombre_unidad
+      FROM asistencias a
+      INNER JOIN estado_asistencia ea ON a.estado_id = ea.estado_id
+      INNER JOIN horarios h ON a.horario_id = h.horario_id
+      INNER JOIN unidades_didacticas ud ON h.programa_id = ud.programa_id
+      WHERE a.dni_estudiante = ?
+      ORDER BY a.fecha_hora DESC
+    `, [req.params.dni]);
+
+    res.json({
+      message: 'Asistencias recuperadas exitosamente',
+      data: rows
+    });
+
+  } catch (error) {
+    console.error('Error getting attendance:', error);
+    res.status(500).json({ message: 'Error recuperando asistencias' });
+  }
+});
+
+// Payments endpoints
+app.get('/pagos/:dni', authenticateStudent, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        p.*,
+        tp.nombre as tipo_pago_nombre,
+        tp.descripcion as tipo_pago_descripcion
+      FROM pagos p
+      LEFT JOIN tipos_pago tp ON p.tipo_pago = tp.nombre
+      WHERE p.dni_estudiante = ?
+      ORDER BY p.fecha DESC
+    `, [req.params.dni]);
+
+    res.json({
+      message: 'Pagos recuperados exitosamente',
+      data: rows
+    });
+
+  } catch (error) {
+    console.error('Error getting payments:', error);
+    res.status(500).json({ message: 'Error recuperando pagos' });
+  }
+});
+
+app.get('/tipos-pago', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT 
+        tipo_id,
+        nombre,
+        descripcion,
+        monto_referencial,
+        codigo_tupa
+      FROM tipos_pago
+      ORDER BY nombre
+    `);
+
+    res.json({
+      message: 'Tipos de pago recuperados exitosamente',
+      data: rows
+    });
+
+  } catch (error) {
+    console.error('Error getting payment types:', error);
+    res.status(500).json({ message: 'Error recuperando tipos de pago' });
+  }
+});
+
+// Profile image endpoints
+app.post('/estudiante/:dni/imagen', authenticateStudent, uploads.profile.single('imagen'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No se proporcionó imagen' });
+    }
+
+    await pool.execute(
+      'UPDATE estudiantes SET imagen_url = ? WHERE dni = ?',
+      [req.file.filename, req.params.dni]
+    );
+
+    res.status(200).json({ 
+      message: 'Imagen de perfil actualizada exitosamente',
+      url: req.file.filename
+    });
+  } catch (error) {
+    console.error('Error uploading profile image:', error);
+    res.status(500).json({ message: 'Error subiendo imagen de perfil' });
+  }
+});
+
+app.get('/estudiante/:dni/imagen', authenticateStudent, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT imagen_url FROM estudiantes WHERE dni = ?',
+      [req.params.dni]
+    );
+
+    if (rows.length > 0 && rows[0].imagen_url) {
+      const imagePath = path.join(PROFILE_IMAGES_DIR, rows[0].imagen_url);
+      try {
+        await fs.access(imagePath);
+        res.sendFile(imagePath);
+      } catch {
+        res.status(404).json({ message: 'Imagen no encontrada' });
+      }
+    } else {
+      res.status(404).json({ message: 'No hay imagen de perfil' });
+    }
+  } catch (error) {
+    console.error('Error getting profile image:', error);
+    res.status(500).json({ message: 'Error recuperando imagen de perfil' });
   }
 });
 
 // Start server
-const port = 3000;
+const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
