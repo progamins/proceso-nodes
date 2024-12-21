@@ -9,11 +9,11 @@ const FormData = require('form-data');
 const fs = require('fs').promises;
 const app = express();
 
-// Constants
+// Base URL for PHP server
 const PHP_URL = 'https://www.iestpasist.com';
-const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
 
-// Create profile images directory
+// Create profile images directory if it doesn't exist
+const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
 fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
   .then(() => console.log('Profile images directory created'))
   .catch(console.error);
@@ -28,9 +28,8 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0
 });
-
-// Test database connection
-app.get('/api/test', async (req, res) => {
+// Añade este endpoint de prueba en tu servidor
+app.get('/test-db', async (req, res) => {
   try {
     const [rows] = await pool.execute('SELECT 1 as test');
     res.json({ message: 'Database connection successful', data: rows });
@@ -38,7 +37,6 @@ app.get('/api/test', async (req, res) => {
     res.status(500).json({ message: 'Database connection failed', error: err.message });
   }
 });
-
 // Multer configuration for profile images
 const profileImageStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, PROFILE_IMAGES_DIR),
@@ -103,15 +101,12 @@ async function uploadImageToPhp(imageBuffer, originalname) {
   }
 }
 
-// API Routes
-const api = express.Router();
-
-// Authentication routes
-api.post('/auth/login', async (req, res) => {
+// Login endpoint
+app.post('/login', async (req, res) => {
   const { usuario, clave } = req.body;
 
   if (!usuario || !clave) {
-    return res.status(400).json({ message: 'Username and password are required' });
+    return res.status(400).send({ message: 'Username and password are required' });
   }
 
   try {
@@ -121,24 +116,17 @@ api.post('/auth/login', async (req, res) => {
     );
 
     if (rows.length > 0) {
-      res.json({ 
-        message: 'Login successful', 
-        data: rows[0] 
-      });
+      res.send({ message: 'Login successful', data: rows[0] });
     } else {
-      res.status(401).json({ message: 'Invalid credentials' });
+      res.status(401).send({ message: 'Invalid credentials' });
     }
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message 
-    });
+  } catch (err) {
+    res.status(500).send({ message: 'Server error', error: err.message });
   }
 });
 
-// Student profile image routes
-api.get('/students/:dni/profile-image', async (req, res) => {
+// Get student profile image
+app.get('/estudiante/:dni/imagen', async (req, res) => {
   try {
     const [rows] = await pool.execute(
       'SELECT imagen_url FROM estudiantes WHERE dni = ?',
@@ -162,7 +150,8 @@ api.get('/students/:dni/profile-image', async (req, res) => {
   }
 });
 
-api.post('/students/:dni/profile-image', uploadProfileImage.single('imagen'), async (req, res) => {
+// Update profile image
+app.post('/estudiante/:dni/imagen', uploadProfileImage.single('imagen'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No image provided' });
@@ -183,8 +172,8 @@ api.post('/students/:dni/profile-image', uploadProfileImage.single('imagen'), as
   }
 });
 
-// Schedule routes
-api.get('/schedules/:programId', async (req, res) => {
+// Get student schedule
+app.get('/horario/:programaId', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT 
@@ -197,24 +186,24 @@ api.get('/schedules/:programId', async (req, res) => {
       INNER JOIN programas_estudio pe ON h.programa_id = pe.programa_id
       WHERE h.programa_id = ?
       ORDER BY h.fecha_creacion DESC
-    `, [req.params.programId]);
+    `, [req.params.programaId]);
 
     if (rows.length > 0) {
-      const schedule = rows[0];
-      const scheduleUrl = `${PHP_URL}/uploads/${schedule.archivo}`;
+      const horario = rows[0];
+      const horarioUrl = `${PHP_URL}/uploads/${horario.archivo}`;
 
       try {
-        await axios.head(scheduleUrl);
+        await axios.head(horarioUrl);
         res.json({
           message: 'Schedule found',
           data: {
-            ...schedule,
-            url: scheduleUrl
+            ...horario,
+            url: horarioUrl
           }
         });
       } catch (error) {
         res.status(404).json({
-          message: 'Schedule file not available',
+          message: 'PDF file not available',
           error: error.message
         });
       }
@@ -232,8 +221,8 @@ api.get('/schedules/:programId', async (req, res) => {
   }
 });
 
-// Student update routes
-api.put('/students/:dni', async (req, res) => {
+// Update student information
+app.put('/estudiante/:dni/update', async (req, res) => {
   const { dni } = req.params;
   const { field, value } = req.body;
   const allowedFields = ['email', 'celular', 'direccion'];
@@ -284,8 +273,8 @@ api.put('/students/:dni', async (req, res) => {
   }
 });
 
-// Justification routes
-api.get('/justifications/:dni', async (req, res) => {
+// Get student justifications
+app.get('/justificaciones/:dni', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
       SELECT 
@@ -345,11 +334,8 @@ api.get('/justifications/:dni', async (req, res) => {
   }
 });
 
-// Mount API routes
-app.use('/api', api);
-
 // Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+const port = 3000;
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
 });
