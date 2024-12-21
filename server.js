@@ -100,7 +100,13 @@ async function uploadImageToPhp(imageBuffer, originalname) {
     throw new Error('Error uploading image to PHP server');
   }
 }
-
+app.get('/ip', (req, res) => {
+  res.json({
+    ip: req.ip,
+    forwardedFor: req.headers['x-forwarded-for'],
+    remoteAddress: req.connection.remoteAddress
+  });
+});
 // Login endpoint
 app.post('/login', async (req, res) => {
   const { usuario, clave } = req.body;
