@@ -9,8 +9,8 @@ const FormData = require('form-data');
 const fs = require('fs').promises;
 const app = express();
 
-// Base URL for PHP server
-const PHP_URL = 'https://iestpasist.com';
+// Base URL for web hosting
+const BASE_URL = 'https://iestpasist.com';
 
 // Create profile images directory if it doesn't exist
 const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
@@ -18,15 +18,18 @@ fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
   .then(() => console.log('Profile images directory created'))
   .catch(console.error);
 
-// Database configuration
+// MySQL Connection Pool
 const pool = mysql.createPool({
-  host: 'your-mysql-host',
-  user: 'your-mysql-user',
-  password: 'your-mysql-password',
-  database: 'your-database-name',
+  host: '162.241.61.0',
+  user: 'iestpasi_edwin',
+  password: 'EDWINrosas774433)',
+  database: 'iestpasi_iestp',
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 // Test database connection
@@ -41,6 +44,15 @@ async function testConnection() {
 }
 
 testConnection();
+
+// Middleware for database errors
+const handleDatabaseError = (err, req, res, next) => {
+  console.error('Database error:', err);
+  res.status(500).json({
+    message: 'Database connection error',
+    error: err.message
+  });
+};
 
 // Multer configuration for profile images
 const profileImageStorage = multer.diskStorage({
@@ -74,9 +86,10 @@ app.use(cors({
 }));
 
 app.use(bodyParser.json());
+app.use(handleDatabaseError);
 
-// Helper function to upload image to PHP server
-async function uploadImageToPhp(imageBuffer, originalname) {
+// Helper function to upload image to web hosting
+async function uploadImageToServer(imageBuffer, originalname) {
   try {
     const formData = new FormData();
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -87,7 +100,7 @@ async function uploadImageToPhp(imageBuffer, originalname) {
       contentType: 'image/jpeg'
     });
 
-    const response = await axios.post(`${PHP_URL}/upload.php`, formData, {
+    const response = await axios.post(`${BASE_URL}/upload.php`, formData, {
       headers: {
         ...formData.getHeaders(),
       },
@@ -98,16 +111,13 @@ async function uploadImageToPhp(imageBuffer, originalname) {
     return {
       success: true,
       filename: filename,
-      url: `${PHP_URL}/imagenesJ/${filename}`
+      url: `${BASE_URL}/imagenesJ/${filename}`
     };
   } catch (error) {
     console.error('Error uploading image:', error);
-    throw new Error('Error uploading image to PHP server');
+    throw new Error('Error uploading image to server');
   }
 }
-
-// Status endpoint
-app.get('/status', (req, res) => res.send({ message: 'Server active and running' }));
 
 // Login endpoint
 app.post('/login', async (req, res) => {
@@ -133,7 +143,7 @@ app.post('/login', async (req, res) => {
   }
 });
 
-// Get student profile image
+// Profile image endpoints
 app.get('/estudiante/:dni/imagen', async (req, res) => {
   try {
     const [rows] = await pool.execute(
@@ -158,7 +168,6 @@ app.get('/estudiante/:dni/imagen', async (req, res) => {
   }
 });
 
-// Update profile image
 app.post('/estudiante/:dni/imagen', uploadProfileImage.single('imagen'), async (req, res) => {
   try {
     if (!req.file) {
@@ -180,125 +189,7 @@ app.post('/estudiante/:dni/imagen', uploadProfileImage.single('imagen'), async (
   }
 });
 
-// Delete profile image
-app.delete('/estudiante/:dni/imagen', async (req, res) => {
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    const [rows] = await connection.execute(
-      'SELECT imagen_url FROM estudiantes WHERE dni = ?',
-      [req.params.dni]
-    );
-
-    if (rows.length > 0 && rows[0].imagen_url) {
-      const imagePath = path.join(PROFILE_IMAGES_DIR, rows[0].imagen_url);
-      
-      try {
-        await fs.unlink(imagePath);
-      } catch (error) {
-        console.error('Error deleting file:', error);
-      }
-
-      await connection.execute(
-        'UPDATE estudiantes SET imagen_url = NULL WHERE dni = ?',
-        [req.params.dni]
-      );
-
-      await connection.commit();
-      res.json({ message: 'Profile image deleted successfully' });
-    } else {
-      res.status(404).json({ message: 'No profile image found' });
-    }
-  } catch (error) {
-    await connection.rollback();
-    console.error('Error deleting profile image:', error);
-    res.status(500).json({ message: 'Error deleting profile image' });
-  } finally {
-    connection.release();
-  }
-});
-
-// Submit justification
-app.post('/justificacion', upload.array('imagenes', 2), async (req, res) => {
-  const { 
-    dni_estudiante, 
-    tipo_justificacion,
-    motivo_estudiante,
-    fecha_inicio,
-    fecha_fin 
-  } = req.body;
-
-  if (!dni_estudiante || !tipo_justificacion || !motivo_estudiante || 
-      !fecha_inicio || !fecha_fin || !req.files || req.files.length === 0) {
-    return res.status(400).json({ 
-      message: 'All fields are required (DNI, type, reason, dates, and images)' 
-    });
-  }
-
-  const connection = await pool.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    // Upload images
-    const uploadedImages = await Promise.all(
-      req.files.map(file => uploadImageToPhp(file.buffer, file.originalname))
-    );
-
-    // Insert justification
-    const [result] = await connection.execute(
-      `INSERT INTO justificaciones (
-        dni_estudiante, 
-        Fecha_Justificacion,
-        TipoJustificacionID,
-        MotivoEstudiante,
-        Fecha_Inicio,
-        Fecha_Fin,
-        Estado
-      ) VALUES (?, NOW(), ?, ?, ?, ?, 'Pendiente')`,
-      [dni_estudiante, tipo_justificacion, motivo_estudiante, fecha_inicio, fecha_fin]
-    );
-
-    const justificacionID = result.insertId;
-
-    // Insert image references
-    for (const image of uploadedImages) {
-      await connection.execute(
-        `INSERT INTO Jimg (
-          JustificacionID,
-          NombreArchivo,
-          FechaSubida,
-          RutaArchivo,
-          TipoArchivo
-        ) VALUES (?, ?, NOW(), ?, 'image/jpeg')`,
-        [justificacionID, image.filename, image.url]
-      );
-    }
-
-    await connection.commit();
-
-    res.status(201).json({
-      message: 'Justification registered successfully',
-      data: {
-        justificacionID,
-        imageUrls: uploadedImages.map(img => img.url),
-        fecha: new Date()
-      }
-    });
-
-  } catch (error) {
-    await connection.rollback();
-    console.error('Error registering justification:', error);
-    res.status(500).json({
-      message: 'Error processing justification',
-      error: error.message
-    });
-  } finally {
-    connection.release();
-  }
-});
-
-// Get schedule
+// Schedule endpoint
 app.get('/horario/:programaId', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
@@ -316,7 +207,7 @@ app.get('/horario/:programaId', async (req, res) => {
 
     if (rows.length > 0) {
       const horario = rows[0];
-      const horarioUrl = `${PHP_URL}/uploads/${horario.archivo}`;
+      const horarioUrl = `${BASE_URL}/uploads/${horario.archivo}`;
 
       try {
         await axios.head(horarioUrl);
@@ -359,43 +250,131 @@ app.put('/estudiante/:dni/update', async (req, res) => {
     });
   }
 
-  const connection = await pool.getConnection();
   try {
-    await connection.beginTransaction();
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
 
-    await connection.execute(
-      `UPDATE estudiantes SET ${field} = ? WHERE dni = ?`,
-      [value, dni]
-    );
+      await connection.execute(
+        `UPDATE estudiantes SET ${field} = ? WHERE dni = ?`,
+        [value, dni]
+      );
 
-    const [rows] = await connection.execute(
-      'SELECT email as correo_personal, celular as telefonos, direccion FROM estudiantes WHERE dni = ?',
-      [dni]
-    );
+      const [rows] = await connection.execute(
+        'SELECT email as correo_personal, celular as telefonos, direccion FROM estudiantes WHERE dni = ?',
+        [dni]
+      );
 
-    if (rows.length === 0) {
-      throw new Error('Student not found');
+      if (rows.length === 0) {
+        throw new Error('Student not found');
+      }
+
+      await connection.commit();
+      res.json({
+        message: 'Field updated successfully',
+        data: rows[0]
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
-
-    await connection.commit();
-    res.json({
-      message: 'Field updated successfully',
-      data: rows[0]
-    });
-
   } catch (error) {
-    await connection.rollback();
     console.error('Error in update:', error);
     res.status(500).json({
       message: 'Error updating field',
       error: error.message
     });
-  } finally {
-    connection.release();
   }
 });
 
-// Get student justifications
+// Justifications endpoint
+app.post('/justificacion', upload.array('imagenes', 2), async (req, res) => {
+  const { 
+    dni_estudiante, 
+    tipo_justificacion,
+    motivo_estudiante,
+    fecha_inicio,
+    fecha_fin 
+  } = req.body;
+
+  if (!dni_estudiante || !tipo_justificacion || !motivo_estudiante || 
+      !fecha_inicio || !fecha_fin || !req.files || req.files.length === 0) {
+    return res.status(400).json({ 
+      message: 'All fields are required (DNI, type, reason, dates, and images)' 
+    });
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Upload images
+      const uploadedImages = await Promise.all(
+        req.files.map(file => 
+          uploadImageToServer(file.buffer, file.originalname)
+        )
+      );
+
+      // Insert justification
+      const [result] = await connection.execute(
+        `INSERT INTO justificaciones (
+          dni_estudiante, 
+          Fecha_Justificacion, 
+          TipoJustificacionID,
+          MotivoEstudiante,
+          Fecha_Inicio,
+          Fecha_Fin,
+          Estado
+        ) VALUES (?, NOW(), ?, ?, ?, ?, 'Pendiente')`,
+        [dni_estudiante, tipo_justificacion, motivo_estudiante, fecha_inicio, fecha_fin]
+      );
+
+      const justificacionID = result.insertId;
+
+      // Insert image references
+      for (const image of uploadedImages) {
+        await connection.execute(
+          `INSERT INTO Jimg (
+            JustificacionID, 
+            NombreArchivo, 
+            FechaSubida,
+            RutaArchivo,
+            TipoArchivo
+          ) VALUES (?, ?, NOW(), ?, 'image/jpeg')`,
+          [justificacionID, image.filename, image.url]
+        );
+      }
+
+      await connection.commit();
+
+      res.status(201).json({
+        message: 'Justification registered successfully',
+        data: {
+          justificacionID,
+          imageUrls: uploadedImages.map(img => img.url)
+        }
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error('Error registering justification:', error);
+    res.status(500).json({
+      message: 'Error processing justification',
+      error: error.message
+    });
+  }
+});
+
+// Get justifications by DNI
 app.get('/justificaciones/:dni', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
@@ -446,6 +425,7 @@ app.get('/justificaciones/:dni', async (req, res) => {
       message: 'Justifications retrieved successfully',
       data: Array.from(justificacionesMap.values())
     });
+
   } catch (error) {
     console.error('Error getting justifications:', error);
     res.status(500).json({
@@ -455,21 +435,14 @@ app.get('/justificaciones/:dni', async (req, res) => {
   }
 });
 
-// Get complete student information
+// Get complete student data
 app.get('/estudiante/:dni', async (req, res) => {
+  const { dni } = req.params;
+  
   try {
-    // Get student basic information and current academic period
     const [studentRows] = await pool.execute(`
       SELECT 
-        e.nombre, 
-        e.programa, 
-        e.dni, 
-        e.email_corporativo, 
-        e.email, 
-        e.celular, 
-        e.direccion,
-        e.semestre_actual,
-        e.programa_id,
+        e.*,
         q.qr_code_path,
         pa.periodo_id,
         pa.nombre as periodo_nombre,
@@ -477,63 +450,69 @@ app.get('/estudiante/:dni', async (req, res) => {
         pa.fecha_fin
       FROM estudiantes e
       LEFT JOIN qr_codes q ON e.dni = q.dni_estudiante
-      JOIN periodos_academicos pa ON pa.estado = 1 
-      WHERE e.dni = ? 
-      AND CURRENT_DATE BETWEEN pa.fecha_inicio AND pa.fecha_fin
+      JOIN periodos_academicos pa ON pa.estado = 1
+        AND CURRENT_TIMESTAMP BETWEEN pa.fecha_inicio AND pa.fecha_fin
+      WHERE e.dni = ?
       LIMIT 1
-    `, [req.params.dni]);
+    `, [dni]);
 
-    if (studentRows.length > 0) {
-      const student = studentRows[0];
+    if (studentRows.length === 0) {
+      return res.status(404).send({ message: 'Student not found' });
+    }
 
-      // Get student's didactic units
-      const [unitsRows] = await pool.execute(`
-        SELECT 
-          ud.unidad_id,
-          ud.nombre_unidad,
-          ts.nombre_semestre,
-          ts.descripcion as semestre_descripcion
-        FROM unidades_didacticas ud
-        INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
-        WHERE ud.programa_id = ? 
+    // Get student's courses for current semester
+    const [coursesRows] = await pool.execute(`
+      SELECT 
+        ud.unidad_id,
+        ud.nombre_unidad,
+        ts.nombre_semestre,
+        ts.descripcion as semestre_descripcion
+      FROM unidades_didacticas ud
+      INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
+      WHERE ud.programa_id = ?
         AND ud.periodo_id = ?
         AND ud.semestre_id = ?
-      `, [student.programa_id, student.periodo_id, student.semestre_actual]);
+    `, [
+      studentRows[0].programa_id,
+      studentRows[0].periodo_id,
+      studentRows[0].semestre_actual
+    ]);
 
-      const qrCodeUrl = student.qr_code_path
-        ? `${PHP_URL}/qr_codes/${path.basename(student.qr_code_path)}`
-        : null;
+    const student = studentRows[0];
+    const qrCodeUrl = student.qr_code_path
+      ? `${BASE_URL}/qr_codes/${path.basename(student.qr_code_path)}`
+      : null;
 
-      res.json({
-        message: 'Student data retrieved',
-        data: {
-          // Basic student information
-          nombre: student.nombre,
-          programa: student.programa,
-          dni: student.dni,
-          correo_institucional: student.email_corporativo || 'Not available',
-          correo_personal: student.email || 'Not available',
-          telefonos: student.celular || 'Not available',
-          direccion: student.direccion || 'Not available',
-          qr_code_url: qrCodeUrl || 'Not available',
-          
-          // Academic information
-          semestre_actual: student.semestre_actual,
-          periodo_academico: {
-            id: student.periodo_id,
-            nombre: student.periodo_nombre,
-            fecha_inicio: student.fecha_inicio,
-            fecha_fin: student.fecha_fin
-          },
-          unidades_didacticas: unitsRows
-        }
-      });
-    } else {
-      res.status(404).json({ message: 'Student not found' });
-    }
+    res.send({
+      message: 'Student data retrieved successfully',
+      data: {
+        // Basic student information
+        nombre: student.nombre,
+        programa: student.programa,
+        dni: student.dni,
+        correo_institucional: student.email_corporativo || 'Not available',
+        correo_personal: student.email || 'Not available',
+        telefonos: student.celular || 'Not available',
+        direccion: student.direccion || 'Not available',
+        qr_code_url: qrCodeUrl || 'Not available',
+        
+        // Academic information
+        semestre_actual: student.semestre_actual,
+        periodo_academico: {
+          id: student.periodo_id,
+          nombre: student.periodo_nombre,
+          fecha_inicio: student.fecha_inicio,
+          fecha_fin: student.fecha_fin
+        },
+        unidades_didacticas: coursesRows
+      }
+    });
   } catch (err) {
-    console.error('Error in SQL query:', err);
-    res.status(500).json({ message: 'Server error', error: err.message });
+    console.error('SQL query error:', err);
+    res.status(500).send({ 
+      message: 'Server error', 
+      error: err.message 
+    });
   }
 });
 
@@ -545,25 +524,23 @@ app.get('/estudiante/:dni/qr_code', async (req, res) => {
       [req.params.dni]
     );
 
-    if (rows.length > 0) {
-      const qrCodePath = rows[0].qr_code_path;
-      if (qrCodePath) {
-        const qrCodeUrl = `${PHP_URL}/qr_codes/${path.basename(qrCodePath)}`;
-        res.json({ qr_code_url: qrCodeUrl });
-      } else {
-        res.status(404).json({ message: 'QR code not found' });
-      }
+    if (rows.length > 0 && rows[0].qr_code_path) {
+      const qrCodeUrl = `${BASE_URL}/qr_codes/${path.basename(rows[0].qr_code_path)}`;
+      res.json({ qr_code_url: qrCodeUrl });
     } else {
-      res.status(404).json({ message: 'Student not found' });
+      res.status(404).json({ message: 'QR code not found' });
     }
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server error', error: err.message });
+    console.error('Error retrieving QR code:', err);
+    res.status(500).json({ 
+      message: 'Server error', 
+      error: err.message 
+    });
   }
 });
 
 // Start server
-const port = 3000;
+const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
