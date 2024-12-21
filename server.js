@@ -1,5 +1,6 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
+const sql = require('mssql');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
@@ -7,36 +8,36 @@ const multer = require('multer');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs').promises;
+
 const app = express();
 
-// Base URL for PHP server
+// Constants
 const PHP_URL = 'https://www.iestpasist.com';
-
-// Create profile images directory if it doesn't exist
 const PROFILE_IMAGES_DIR = path.join(__dirname, 'profile_images');
+
+// Create profile images directory
 fs.mkdir(PROFILE_IMAGES_DIR, { recursive: true })
   .then(() => console.log('Profile images directory created'))
   .catch(console.error);
 
-// MySQL Connection Pool Configuration
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || '162.241.61.0',
-  user: process.env.DB_USER || 'iestpasi_edwin',
-  password: process.env.DB_PASSWORD || 'EDWINrosas774433)',
-  database: process.env.DB_DATABASE || 'iestpasi_iestp',
+// Database configurations
+const mysqlConfig = {
+  host: process.env.MYSQL_HOST || '162.241.61.0',
+  user: process.env.MYSQL_USER || 'iestpasi_edwin',
+  password: process.env.MYSQL_PASSWORD || 'EDWINrosas774433)',
+  database: process.env.MYSQL_DATABASE || 'iestpasi_iestp',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
-});
-// Añade este endpoint de prueba en tu servidor
-app.get('/test-db', async (req, res) => {
-  try {
-    const [rows] = await pool.execute('SELECT 1 as test');
-    res.json({ message: 'Database connection successful', data: rows });
-  } catch (err) {
-    res.status(500).json({ message: 'Database connection failed', error: err.message });
-  }
-});
+};
+
+
+// Database connections
+const mysqlPool = mysql.createPool(mysqlConfig);
+sql.connect(mssqlConfig)
+  .then(() => console.log('Connected to SQL Server'))
+  .catch(err => console.error('Error connecting to SQL Server:', err));
+
 // Multer configuration for profile images
 const profileImageStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, PROFILE_IMAGES_DIR),
@@ -100,88 +101,123 @@ async function uploadImageToPhp(imageBuffer, originalname) {
     throw new Error('Error uploading image to PHP server');
   }
 }
-app.get('/ip', (req, res) => {
-  res.json({
-    ip: req.ip,
-    forwardedFor: req.headers['x-forwarded-for'],
-    remoteAddress: req.connection.remoteAddress
-  });
-});
-// Login endpoint
-app.post('/login', async (req, res) => {
+
+// Standardized endpoints
+app.post('/auth/login', async (req, res) => {
   const { usuario, clave } = req.body;
 
   if (!usuario || !clave) {
-    return res.status(400).send({ message: 'Username and password are required' });
+    return res.status(400).json({ message: 'Username and password are required' });
   }
 
   try {
-    const [rows] = await pool.execute(
+    // Try MySQL first
+    const [rows] = await mysqlPool.execute(
       'SELECT * FROM estudiantes WHERE usuario = ? AND clave = ?',
       [usuario, clave]
     );
 
     if (rows.length > 0) {
-      res.send({ message: 'Login successful', data: rows[0] });
-    } else {
-      res.status(401).send({ message: 'Invalid credentials' });
+      return res.json({ message: 'Login successful', data: rows[0] });
     }
-  } catch (err) {
-    res.status(500).send({ message: 'Server error', error: err.message });
+
+    // If not found in MySQL, try MSSQL
+    const request = new sql.Request();
+    request.input('usuario', sql.NVarChar, usuario);
+    request.input('clave', sql.NVarChar, clave);
+    const result = await request.query(
+      'SELECT * FROM estudiantes WHERE usuario = @usuario AND clave = @clave'
+    );
+
+    if (result.recordset.length > 0) {
+      return res.json({ message: 'Login successful', data: result.recordset[0] });
+    }
+
+    res.status(401).json({ message: 'Invalid credentials' });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Get student profile image
-app.get('/estudiante/:dni/imagen', async (req, res) => {
+// Profile image endpoints
+app.get('/students/:dni/profile-image', async (req, res) => {
   try {
-    const [rows] = await pool.execute(
+    // Try both databases
+    const [mysqlRows] = await mysqlPool.execute(
       'SELECT imagen_url FROM estudiantes WHERE dni = ?',
       [req.params.dni]
     );
 
-    if (rows.length > 0 && rows[0].imagen_url) {
-      const imagePath = path.join(PROFILE_IMAGES_DIR, rows[0].imagen_url);
+    let imageUrl = mysqlRows[0]?.imagen_url;
+
+    if (!imageUrl) {
+      const request = new sql.Request();
+      request.input('dni', sql.NVarChar, req.params.dni);
+      const result = await request.query(
+        'SELECT imagen_url FROM estudiantes WHERE dni = @dni'
+      );
+      imageUrl = result.recordset[0]?.imagen_url;
+    }
+
+    if (imageUrl) {
+      const imagePath = path.join(PROFILE_IMAGES_DIR, imageUrl);
       try {
         await fs.access(imagePath);
-        res.sendFile(imagePath);
+        return res.sendFile(imagePath);
       } catch {
-        res.status(404).json({ message: 'Image not found' });
+        return res.status(404).json({ message: 'Image file not found' });
       }
-    } else {
-      res.status(404).json({ message: 'No profile image' });
     }
+
+    res.status(404).json({ message: 'No profile image found' });
   } catch (error) {
-    console.error('Error getting profile image:', error);
-    res.status(500).json({ message: 'Error getting profile image' });
+    console.error('Error retrieving profile image:', error);
+    res.status(500).json({ message: 'Error retrieving profile image' });
   }
 });
 
-// Update profile image
-app.post('/estudiante/:dni/imagen', uploadProfileImage.single('imagen'), async (req, res) => {
+app.post('/students/:dni/profile-image', uploadProfileImage.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ message: 'No image provided' });
     }
 
-    await pool.execute(
-      'UPDATE estudiantes SET imagen_url = ? WHERE dni = ?',
-      [req.file.filename, req.params.dni]
-    );
+    // Update in both databases
+    try {
+      await mysqlPool.execute(
+        'UPDATE estudiantes SET imagen_url = ? WHERE dni = ?',
+        [req.file.filename, req.params.dni]
+      );
+    } catch (error) {
+      console.error('MySQL update error:', error);
+    }
 
-    res.status(200).json({ 
+    try {
+      const request = new sql.Request();
+      request.input('imageUrl', sql.NVarChar, req.file.filename);
+      request.input('dni', sql.NVarChar, req.params.dni);
+      await request.query(
+        'UPDATE estudiantes SET imagen_url = @imageUrl WHERE dni = @dni'
+      );
+    } catch (error) {
+      console.error('MSSQL update error:', error);
+    }
+
+    res.status(200).json({
       message: 'Profile image updated successfully',
       url: req.file.filename
     });
   } catch (error) {
-    console.error('Error uploading profile image:', error);
-    res.status(500).json({ message: 'Error uploading profile image' });
+    console.error('Error updating profile image:', error);
+    res.status(500).json({ message: 'Error updating profile image' });
   }
 });
 
-// Get student schedule
-app.get('/horario/:programaId', async (req, res) => {
+// Schedule endpoint
+app.get('/schedules/:programId', async (req, res) => {
   try {
-    const [rows] = await pool.execute(`
+    const [rows] = await mysqlPool.execute(`
       SELECT 
         h.horario_id,
         h.nombre,
@@ -192,43 +228,43 @@ app.get('/horario/:programaId', async (req, res) => {
       INNER JOIN programas_estudio pe ON h.programa_id = pe.programa_id
       WHERE h.programa_id = ?
       ORDER BY h.fecha_creacion DESC
-    `, [req.params.programaId]);
+    `, [req.params.programId]);
 
     if (rows.length > 0) {
-      const horario = rows[0];
-      const horarioUrl = `${PHP_URL}/uploads/${horario.archivo}`;
+      const schedule = rows[0];
+      const scheduleUrl = `${PHP_URL}/uploads/${schedule.archivo}`;
 
       try {
-        await axios.head(horarioUrl);
+        await axios.head(scheduleUrl);
         res.json({
           message: 'Schedule found',
           data: {
-            ...horario,
-            url: horarioUrl
+            ...schedule,
+            url: scheduleUrl
           }
         });
       } catch (error) {
         res.status(404).json({
-          message: 'PDF file not available',
+          message: 'Schedule file not available',
           error: error.message
         });
       }
     } else {
       res.status(404).json({ 
-        message: 'No schedule found for this study program'
+        message: 'No schedule found for this study program' 
       });
     }
   } catch (error) {
-    console.error('Error getting schedule:', error);
+    console.error('Error retrieving schedule:', error);
     res.status(500).json({
-      message: 'Error getting schedule',
+      message: 'Error retrieving schedule',
       error: error.message
     });
   }
 });
 
-// Update student information
-app.put('/estudiante/:dni/update', async (req, res) => {
+// Student update endpoint
+app.put('/students/:dni', async (req, res) => {
   const { dni } = req.params;
   const { field, value } = req.body;
   const allowedFields = ['email', 'celular', 'direccion'];
@@ -240,38 +276,45 @@ app.put('/estudiante/:dni/update', async (req, res) => {
   }
 
   try {
-    const connection = await pool.getConnection();
+    // Update in both databases
     try {
-      await connection.beginTransaction();
-
-      await connection.execute(
+      await mysqlPool.execute(
         `UPDATE estudiantes SET ${field} = ? WHERE dni = ?`,
         [value, dni]
       );
-
-      const [rows] = await connection.execute(
-        'SELECT email as correo_personal, celular as telefonos, direccion FROM estudiantes WHERE dni = ?',
-        [dni]
-      );
-
-      if (rows.length === 0) {
-        throw new Error('Student not found');
-      }
-
-      await connection.commit();
-      res.json({
-        message: 'Field updated successfully',
-        data: rows[0]
-      });
-
     } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
+      console.error('MySQL update error:', error);
     }
+
+    try {
+      const request = new sql.Request();
+      request.input('value', sql.NVarChar, value);
+      request.input('dni', sql.NVarChar, dni);
+      await request.query(`
+        UPDATE estudiantes 
+        SET ${field} = @value 
+        WHERE dni = @dni
+      `);
+    } catch (error) {
+      console.error('MSSQL update error:', error);
+    }
+
+    // Get updated data
+    const [rows] = await mysqlPool.execute(
+      'SELECT email as correo_personal, celular as telefonos, direccion FROM estudiantes WHERE dni = ?',
+      [dni]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    res.json({
+      message: 'Field updated successfully',
+      data: rows[0]
+    });
   } catch (error) {
-    console.error('Error in update:', error);
+    console.error('Error updating student:', error);
     res.status(500).json({
       message: 'Error updating field',
       error: error.message
@@ -279,10 +322,10 @@ app.put('/estudiante/:dni/update', async (req, res) => {
   }
 });
 
-// Get student justifications
-app.get('/justificaciones/:dni', async (req, res) => {
+// Justification endpoints
+app.get('/justifications/:dni', async (req, res) => {
   try {
-    const [rows] = await pool.execute(`
+    const [rows] = await mysqlPool.execute(`
       SELECT 
         j.JustificacionID,
         j.Fecha_Justificacion,
@@ -306,22 +349,22 @@ app.get('/justificaciones/:dni', async (req, res) => {
     rows.forEach(record => {
       if (!justificacionesMap.has(record.JustificacionID)) {
         justificacionesMap.set(record.JustificacionID, {
-          justificacionID: record.JustificacionID,
-          fecha_justificacion: record.Fecha_Justificacion,
-          tipo_justificacion: record.TipoJustificacion,
-          motivo_estudiante: record.MotivoEstudiante,
-          fecha_inicio: record.Fecha_Inicio,
-          fecha_fin: record.Fecha_Fin,
-          estado: record.Estado,
-          imagenes: []
+          justificationId: record.JustificacionID,
+          justificationDate: record.Fecha_Justificacion,
+          justificationType: record.TipoJustificacion,
+          studentReason: record.MotivoEstudiante,
+          startDate: record.Fecha_Inicio,
+          endDate: record.Fecha_Fin,
+          status: record.Estado,
+          images: []
         });
       }
       
       if (record.RutaArchivo) {
-        justificacionesMap.get(record.JustificacionID).imagenes.push({
-          nombre: record.NombreArchivo,
+        justificacionesMap.get(record.JustificacionID).images.push({
+          name: record.NombreArchivo,
           url: record.RutaArchivo,
-          fecha_subida: record.FechaSubida
+          uploadDate: record.FechaSubida
         });
       }
     });
@@ -330,18 +373,17 @@ app.get('/justificaciones/:dni', async (req, res) => {
       message: 'Justifications retrieved successfully',
       data: Array.from(justificacionesMap.values())
     });
-
   } catch (error) {
-    console.error('Error getting justifications:', error);
+    console.error('Error retrieving justifications:', error);
     res.status(500).json({
-      message: 'Error getting justifications',
+      message: 'Error retrieving justifications',
       error: error.message
     });
   }
 });
 
 // Start server
-const port = 3000;
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
