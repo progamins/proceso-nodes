@@ -101,10 +101,11 @@ async function uploadImageToPhp(imageBuffer, originalname) {
   }
 }
 // Get estudiante completo
+// Modificación del endpoint /estudiante/:dni en el backend
 app.get('/estudiante/:dni', async (req, res) => {
   try {
-    // Primera consulta: Obtener datos del estudiante y período actual
-    const [rows] = await pool.execute(`
+    // Primera consulta: Obtener datos básicos del estudiante
+    const [studentRows] = await pool.execute(`
       SELECT 
         e.nombre, 
         e.programa, 
@@ -115,74 +116,73 @@ app.get('/estudiante/:dni', async (req, res) => {
         e.direccion,
         e.semestre_actual,
         e.programa_id,
-        q.qr_code_path,
         pa.periodo_id,
         pa.nombre as periodo_nombre,
         pa.fecha_inicio,
-        pa.fecha_fin,
-        pa.semestres
+        pa.fecha_fin
       FROM estudiantes e
-      LEFT JOIN qr_codes q ON e.dni = q.dni_estudiante
       LEFT JOIN periodos_academicos pa ON pa.estado = 1 
         AND CURRENT_TIMESTAMP BETWEEN pa.fecha_inicio AND pa.fecha_fin
       WHERE e.dni = ?
     `, [req.params.dni]);
 
-    if (rows.length > 0) {
-      const student = rows[0];
-      
-      console.log('Datos del estudiante:', {
+    if (studentRows.length === 0) {
+      return res.status(404).json({ message: 'Estudiante no encontrado' });
+    }
+
+    const student = studentRows[0];
+
+    // Segunda consulta: Obtener unidades didácticas específicas del estudiante
+    const [unidadesRows] = await pool.execute(`
+      SELECT DISTINCT
+        ud.unidad_id,
+        ud.nombre_unidad,
+        ts.nombre_semestre,
+        ts.descripcion as semestre_descripcion,
+        pe.nombre_programa,
+        pa.nombre as periodo_nombre
+      FROM unidades_didacticas ud
+      INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
+      INNER JOIN programas_estudio pe ON ud.programa_id = pe.programa_id
+      INNER JOIN periodos_academicos pa ON ud.periodo_id = pa.periodo_id
+      WHERE ud.programa_id = ?
+      AND ts.semestre_id = ?
+      ORDER BY ts.semestre_id ASC, ud.nombre_unidad ASC
+    `, [student.programa_id, student.semestre_actual]);
+
+    console.log('Unidades encontradas:', {
+      programa_id: student.programa_id,
+      semestre_actual: student.semestre_actual,
+      cantidad: unidadesRows.length
+    });
+
+    res.json({
+      message: 'Datos del estudiante obtenidos',
+      data: {
+        nombre: student.nombre,
+        programa: student.programa,
+        dni: student.dni,
         programa_id: student.programa_id,
         semestre_actual: student.semestre_actual,
-        periodo_id: student.periodo_id
-      });
-
-      // Consulta para unidades didácticas que coincidan con el programa, semestre y periodo
-      const [unidadesRows] = await pool.execute(`
-        SELECT 
-          ud.unidad_id,
-          ud.nombre_unidad,
-          ts.nombre_semestre,
-          ts.descripcion as semestre_descripcion,
-          pa.nombre as periodo_nombre
-        FROM unidades_didacticas ud
-        INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
-        INNER JOIN periodos_academicos pa ON ud.periodo_id = pa.periodo_id
-        WHERE ud.programa_id = ?
-          AND ud.semestre_id = ?
-          AND ud.periodo_id = ?
-        ORDER BY ud.unidad_id
-      `, [student.programa_id, student.semestre_actual, student.periodo_id]);
-
-      console.log('Unidades encontradas:', unidadesRows.length);
-
-      res.json({
-        message: 'Datos del estudiante obtenidos',
-        data: {
-          nombre: student.nombre,
-          programa: student.programa,
-          dni: student.dni,
-          correo_institucional: student.email_corporativo || 'No disponible',
-          correo_personal: student.email || 'No disponible',
-          telefonos: student.celular || 'No disponible',
-          direccion: student.direccion || 'No disponible',
-          semestre_actual: student.semestre_actual,
-          programa_id: student.programa_id,
-          periodo_academico: student.periodo_id ? {
-            id: student.periodo_id,
-            nombre: student.periodo_nombre,
-            fecha_inicio: student.fecha_inicio,
-            fecha_fin: student.fecha_fin
-          } : null,
-          unidades_didacticas: unidadesRows
-        }
-      });
-    } else {
-      res.status(404).json({ message: 'Estudiante no encontrado' });
-    }
+        correo_institucional: student.email_corporativo || 'No disponible',
+        correo_personal: student.email || 'No disponible',
+        telefonos: student.celular || 'No disponible',
+        direccion: student.direccion || 'No disponible',
+        periodo_academico: student.periodo_id ? {
+          id: student.periodo_id,
+          nombre: student.periodo_nombre,
+          fecha_inicio: student.fecha_inicio,
+          fecha_fin: student.fecha_fin
+        } : null,
+        unidades_didacticas: unidadesRows
+      }
+    });
   } catch (err) {
     console.error('Error en la consulta SQL:', err);
-    res.status(500).json({ message: 'Error en el servidor', error: err.message });
+    res.status(500).json({ 
+      message: 'Error en el servidor', 
+      error: err.message 
+    });
   }
 });
 // Get QR code del estudiante
