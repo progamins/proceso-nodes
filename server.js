@@ -103,6 +103,7 @@ async function uploadImageToPhp(imageBuffer, originalname) {
 // Get estudiante completo
 app.get('/estudiante/:dni', async (req, res) => {
   try {
+    // Primera consulta para obtener datos del estudiante
     const [rows] = await pool.execute(`
       SELECT 
         e.nombre, 
@@ -129,7 +130,15 @@ app.get('/estudiante/:dni', async (req, res) => {
     if (rows.length > 0) {
       const student = rows[0];
       
-      // Obtener unidades didácticas si es necesario
+      // Verificar que tenemos programa_id y semestre_actual
+      if (!student.programa_id || !student.semestre_actual) {
+        console.log('Falta programa_id o semestre_actual:', {
+          programa_id: student.programa_id,
+          semestre_actual: student.semestre_actual
+        });
+      }
+
+      // Consulta modificada para unidades didácticas
       const [unidadesRows] = await pool.execute(`
         SELECT 
           ud.unidad_id,
@@ -138,10 +147,11 @@ app.get('/estudiante/:dni', async (req, res) => {
           ts.descripcion as semestre_descripcion
         FROM unidades_didacticas ud
         INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
-        WHERE ud.programa_id = ? 
-          AND ud.semestre_id = ?
+        WHERE ud.programa_id = ?
         ORDER BY ud.unidad_id
-      `, [student.programa_id, student.semestre_actual]);
+      `, [student.programa_id]);
+
+      console.log('Unidades encontradas:', unidadesRows.length);
 
       res.json({
         message: 'Datos del estudiante obtenidos',
@@ -149,11 +159,12 @@ app.get('/estudiante/:dni', async (req, res) => {
           nombre: student.nombre,
           programa: student.programa,
           dni: student.dni,
+          programa_id: student.programa_id,
+          semestre_actual: student.semestre_actual,
           correo_institucional: student.email_corporativo || 'No disponible',
           correo_personal: student.email || 'No disponible',
           telefonos: student.celular || 'No disponible',
           direccion: student.direccion || 'No disponible',
-          semestre_actual: student.semestre_actual,
           periodo_academico: student.periodo_id ? {
             id: student.periodo_id,
             nombre: student.periodo_nombre,
