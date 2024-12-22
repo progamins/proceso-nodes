@@ -182,7 +182,81 @@ app.get('/estudiante/:dni', async (req, res) => {
     res.status(500).json({ message: 'Error en el servidor', error: err.message });
   }
 });
+// Endpoint para obtener unidades didácticas por semestre del estudiante
+app.get('/estudiante/:dni/unidades-didacticas', async (req, res) => {
+  try {
+    // Primero obtenemos el programa_id y semestre_actual del estudiante
+    const [estudianteRows] = await pool.execute(
+      'SELECT programa_id, semestre_actual FROM estudiantes WHERE dni = ?',
+      [req.params.dni]
+    );
 
+    if (estudianteRows.length === 0) {
+      return res.status(404).json({
+        message: 'Estudiante no encontrado'
+      });
+    }
+
+    const { programa_id, semestre_actual } = estudianteRows[0];
+
+    if (!programa_id || !semestre_actual) {
+      return res.status(400).json({
+        message: 'El estudiante no tiene programa o semestre asignado'
+      });
+    }
+
+    // Obtenemos las unidades didácticas del semestre actual
+    const [unidadesRows] = await pool.execute(`
+      SELECT 
+        ud.unidad_id,
+        ud.nombre_unidad,
+        ts.nombre_semestre,
+        ts.descripcion as semestre_descripcion,
+        pe.nombre_programa,
+        pa.nombre as periodo_nombre,
+        pa.fecha_inicio,
+        pa.fecha_fin
+      FROM unidades_didacticas ud
+      INNER JOIN tipo_semestre ts ON ud.semestre_id = ts.semestre_id
+      INNER JOIN programas_estudio pe ON ud.programa_id = pe.programa_id
+      INNER JOIN periodos_academicos pa ON ud.periodo_id = pa.periodo_id
+      WHERE ud.programa_id = ? 
+      AND ts.semestre_id = ?
+      ORDER BY ud.nombre_unidad ASC
+    `, [programa_id, semestre_actual]);
+
+    // Estructuramos la respuesta
+    const response = {
+      message: 'Unidades didácticas obtenidas con éxito',
+      data: {
+        semestre_actual,
+        programa: unidadesRows.length > 0 ? unidadesRows[0].nombre_programa : null,
+        periodo: unidadesRows.length > 0 ? {
+          nombre: unidadesRows[0].periodo_nombre,
+          fecha_inicio: unidadesRows[0].fecha_inicio,
+          fecha_fin: unidadesRows[0].fecha_fin
+        } : null,
+        unidades_didacticas: unidadesRows.map(row => ({
+          id: row.unidad_id,
+          nombre: row.nombre_unidad,
+          semestre: {
+            numero: row.nombre_semestre,
+            descripcion: row.semestre_descripcion
+          }
+        }))
+      }
+    };
+
+    res.json(response);
+
+  } catch (error) {
+    console.error('Error obteniendo unidades didácticas:', error);
+    res.status(500).json({
+      message: 'Error al obtener las unidades didácticas',
+      error: error.message
+    });
+  }
+});
 // Get QR code del estudiante
 app.get('/estudiante/:dni/qr_code', async (req, res) => {
   try {
