@@ -46,7 +46,56 @@ const profileImageStorage = multer.diskStorage({
     cb(null, `${dni}${fileExt}`);
   }
 });
+const storage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    const dir = path.join(__dirname, 'temp_uploads');
+    await fs.mkdir(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Solo se permiten archivos de imagen'));
+    }
+  }
+}).array('imagenes', 2);
+// Helper function to upload image to PHP server
+async function uploadToIESTP(filePath, originalname) {
+  try {
+    const form = new FormData();
+    const fileStream = await fs.readFile(filePath);
+    
+    form.append('imagen', fileStream, {
+      filename: originalname,
+      contentType: 'image/jpeg'
+    });
 
+    const response = await axios.post('https://iestpasist.com/upload.php', form, {
+      headers: {
+        ...form.getHeaders(),
+      },
+    });
+
+    if (response.data && response.data.success) {
+      return `https://iestpasist.com/imagenesJ/${response.data.filename}`;
+    }
+    throw new Error('Error al subir la imagen al servidor');
+  } catch (error) {
+    console.error('Error uploading to IESTP:', error);
+    throw error;
+  }
+}
 const uploadProfileImage = multer({ 
   storage: profileImageStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -453,7 +502,106 @@ app.put('/estudiante/:dni/update', async (req, res) => {
   }
 });
 
-// Get student justifications
+// POST endpoint for new justification
+app.post('/justificacion', (req, res) => {
+  upload(req, res, async (err) => {
+    if (err) {
+      console.error('Error en upload:', err);
+      return res.status(400).json({
+        message: 'Error al subir los archivos',
+        error: err.message
+      });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      // Insert justification record
+      const [result] = await connection.execute(
+        `INSERT INTO justificaciones (
+          dni_estudiante,
+          TipoJustificacionID,
+          MotivoEstudiante,
+          Fecha_Inicio,
+          Fecha_Fin,
+          Fecha_Justificacion,
+          Estado
+        ) VALUES (?, ?, ?, ?, ?, CURDATE(), 'Pendiente')`,
+        [
+          req.body.dni_estudiante,
+          req.body.tipo_justificacion,
+          req.body.motivo_estudiante,
+          req.body.fecha_inicio,
+          req.body.fecha_fin
+        ]
+      );
+
+      const justificacionId = result.insertId;
+
+      // Process and save images
+      if (req.files && req.files.length > 0) {
+        for (const file of req.files) {
+          try {
+            // Upload to IESTP server
+            const imageUrl = await uploadToIESTP(file.path, file.originalname);
+
+            // Save image reference in database
+            await connection.execute(
+              `INSERT INTO Jimg (
+                JustificacionID,
+                NombreArchivo,
+                RutaArchivo,
+                FechaSubida,
+                TipoArchivo
+              ) VALUES (?, ?, ?, NOW(), ?)`,
+              [
+                justificacionId,
+                file.originalname,
+                imageUrl,
+                file.mimetype
+              ]
+            );
+
+            // Delete temporary file
+            await fs.unlink(file.path);
+          } catch (uploadError) {
+            console.error('Error processing image:', uploadError);
+            throw uploadError;
+          }
+        }
+      }
+
+      await connection.commit();
+
+      res.status(201).json({
+        message: 'Justificación creada exitosamente',
+        data: {
+          justificacionId,
+          estado: 'Pendiente'
+        }
+      });
+
+    } catch (error) {
+      await connection.rollback();
+      console.error('Error en la transacción:', error);
+      res.status(500).json({
+        message: 'Error al crear la justificación',
+        error: error.message
+      });
+    } finally {
+      connection.release();
+      // Clean up any remaining temporary files
+      if (req.files) {
+        for (const file of req.files) {
+          fs.unlink(file.path).catch(console.error);
+        }
+      }
+    }
+  });
+});
+
+// GET endpoint for student justifications
 app.get('/justificaciones/:dni', async (req, res) => {
   try {
     const [rows] = await pool.execute(`
@@ -465,50 +613,36 @@ app.get('/justificaciones/:dni', async (req, res) => {
         j.Fecha_Fin,
         j.Estado,
         tj.Nombre as TipoJustificacion,
-        i.NombreArchivo,
-        i.RutaArchivo,
-        i.FechaSubida
+        GROUP_CONCAT(
+          JSON_OBJECT(
+            'id', i.ImagenID,
+            'nombre', i.NombreArchivo,
+            'url', i.RutaArchivo,
+            'fecha', i.FechaSubida
+          )
+        ) as imagenes
       FROM justificaciones j
       INNER JOIN tipos_justificacion tj ON j.TipoJustificacionID = tj.TipoJustificacionID
       LEFT JOIN Jimg i ON j.JustificacionID = i.JustificacionID
       WHERE j.dni_estudiante = ?
+      GROUP BY j.JustificacionID
       ORDER BY j.Fecha_Justificacion DESC
     `, [req.params.dni]);
 
-    const justificacionesMap = new Map();
-    
-    rows.forEach(record => {
-      if (!justificacionesMap.has(record.JustificacionID)) {
-        justificacionesMap.set(record.JustificacionID, {
-          justificacionID: record.JustificacionID,
-          fecha_justificacion: record.Fecha_Justificacion,
-          tipo_justificacion: record.TipoJustificacion,
-          motivo_estudiante: record.MotivoEstudiante,
-          fecha_inicio: record.Fecha_Inicio,
-          fecha_fin: record.Fecha_Fin,
-          estado: record.Estado,
-          imagenes: []
-        });
-      }
-      
-      if (record.RutaArchivo) {
-        justificacionesMap.get(record.JustificacionID).imagenes.push({
-          nombre: record.NombreArchivo,
-          url: record.RutaArchivo,
-          fecha_subida: record.FechaSubida
-        });
-      }
-    });
+    const justificaciones = rows.map(row => ({
+      ...row,
+      imagenes: row.imagenes ? JSON.parse(`[${row.imagenes}]`) : []
+    }));
 
     res.json({
-      message: 'Justifications retrieved successfully',
-      data: Array.from(justificacionesMap.values())
+      message: 'Justificaciones obtenidas exitosamente',
+      data: justificaciones
     });
 
   } catch (error) {
     console.error('Error getting justifications:', error);
     res.status(500).json({
-      message: 'Error getting justifications',
+      message: 'Error al obtener las justificaciones',
       error: error.message
     });
   }
