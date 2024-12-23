@@ -57,6 +57,7 @@ const storage = multer.diskStorage({
     cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
   }
 });
+
 const upload = multer({
   storage: storage,
   limits: {
@@ -70,14 +71,17 @@ const upload = multer({
     }
   }
 }).array('imagenes', 2);
+
 // Helper function to upload image to PHP server
 async function uploadToIESTP(filePath, originalname) {
   try {
     const form = new FormData();
     const fileStream = await fs.readFile(filePath);
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const filename = uniqueSuffix + '-' + originalname;
     
     form.append('imagen', fileStream, {
-      filename: originalname,
+      filename: filename,
       contentType: 'image/jpeg'
     });
 
@@ -87,15 +91,13 @@ async function uploadToIESTP(filePath, originalname) {
       },
     });
 
-    if (response.data && response.data.success) {
-      return `https://iestpasist.com/imagenesJ/${response.data.filename}`;
-    }
-    throw new Error('Error al subir la imagen al servidor');
+    return `https://iestpasist.com/imagenesJ/${filename}`;
   } catch (error) {
     console.error('Error uploading to IESTP:', error);
     throw error;
   }
 }
+
 const uploadProfileImage = multer({ 
   storage: profileImageStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
@@ -517,6 +519,14 @@ app.post('/justificacion', (req, res) => {
     try {
       await connection.beginTransaction();
 
+      // Validate dates
+      const fechaInicio = new Date(req.body.fecha_inicio);
+      const fechaFin = new Date(req.body.fecha_fin);
+
+      if (fechaFin < fechaInicio) {
+        throw new Error('La fecha de fin no puede ser anterior a la fecha de inicio');
+      }
+
       // Insert justification record
       const [result] = await connection.execute(
         `INSERT INTO justificaciones (
@@ -546,9 +556,9 @@ app.post('/justificacion', (req, res) => {
             // Upload to IESTP server
             const imageUrl = await uploadToIESTP(file.path, file.originalname);
 
-            // Save image reference in database
+            // Save image reference in database using lowercase table name
             await connection.execute(
-              `INSERT INTO Jimg (
+              `INSERT INTO jimg (
                 JustificacionID,
                 NombreArchivo,
                 RutaArchivo,
@@ -623,7 +633,7 @@ app.get('/justificaciones/:dni', async (req, res) => {
         ) as imagenes
       FROM justificaciones j
       INNER JOIN tipos_justificacion tj ON j.TipoJustificacionID = tj.TipoJustificacionID
-      LEFT JOIN Jimg i ON j.JustificacionID = i.JustificacionID
+      LEFT JOIN jimg i ON j.JustificacionID = i.JustificacionID
       WHERE j.dni_estudiante = ?
       GROUP BY j.JustificacionID
       ORDER BY j.Fecha_Justificacion DESC
@@ -647,7 +657,6 @@ app.get('/justificaciones/:dni', async (req, res) => {
     });
   }
 });
-
 // Start server
 const port = 3000;
 app.listen(port, () => {
