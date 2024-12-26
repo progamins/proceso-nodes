@@ -233,6 +233,96 @@ app.get('/estudiante/:dni', async (req, res) => {
     res.status(500).json({ message: 'Error en el servidor', error: err.message });
   }
 });
+// Get student grades
+app.get('/estudiante/:dni/notas', async (req, res) => {
+  try {
+    // Primero obtenemos el ID del estudiante basado en el DNI
+    const [estudianteRows] = await pool.execute(
+      'SELECT id FROM estudiantes WHERE dni = ?',
+      [req.params.dni]
+    );
+
+    if (estudianteRows.length === 0) {
+      return res.status(404).json({
+        message: 'Estudiante no encontrado'
+      });
+    }
+
+    const estudianteId = estudianteRows[0].id;
+
+    // Obtenemos las notas con toda la información relacionada
+    const [notasRows] = await pool.execute(`
+      SELECT 
+        n.id_nota,
+        n.nota_promedio,
+        n.nota_recuperacion,
+        n.nota_final,
+        i.indicador,
+        ud.nombre_unidad,
+        ud.unidad_id,
+        pe.nombre_programa,
+        pa.nombre as periodo_nombre,
+        pa.fecha_inicio as periodo_inicio,
+        pa.fecha_fin as periodo_fin,
+        rn.creditos,
+        rn.horas_semanales,
+        d.nombres as nombre_docente,
+        rn.turno,
+        rn.seccion
+      FROM notas n
+      INNER JOIN indicadores i ON n.id_indicador = i.id_indicador
+      INNER JOIN registro_notas rn ON n.id_nota = rn.id_nota
+      INNER JOIN unidades_didacticas ud ON rn.id_unidad = ud.unidad_id
+      INNER JOIN programas_estudio pe ON rn.id_programa = pe.programa_id
+      INNER JOIN periodos_academicos pa ON rn.id_periodo = pa.periodo_id
+      INNER JOIN docentes d ON rn.id_docente = d.id_docente
+      WHERE n.id_estudiante = ?
+      ORDER BY pa.fecha_inicio DESC, ud.nombre_unidad ASC
+    `, [estudianteId]);
+
+    // Organizamos las notas por unidad didáctica
+    const notasPorUnidad = notasRows.reduce((acc, nota) => {
+      if (!acc[nota.unidad_id]) {
+        acc[nota.unidad_id] = {
+          unidad_didactica: nota.nombre_unidad,
+          programa: nota.nombre_programa,
+          periodo: {
+            nombre: nota.periodo_nombre,
+            fecha_inicio: nota.periodo_inicio,
+            fecha_fin: nota.periodo_fin
+          },
+          docente: nota.nombre_docente,
+          creditos: nota.creditos,
+          horas_semanales: nota.horas_semanales,
+          turno: nota.turno,
+          seccion: nota.seccion,
+          indicadores: []
+        };
+      }
+
+      acc[nota.unidad_id].indicadores.push({
+        nombre: nota.indicador,
+        nota_promedio: nota.nota_promedio,
+        nota_recuperacion: nota.nota_recuperacion,
+        nota_final: nota.nota_final
+      });
+
+      return acc;
+    }, {});
+
+    res.json({
+      message: 'Notas obtenidas exitosamente',
+      data: Object.values(notasPorUnidad)
+    });
+
+  } catch (error) {
+    console.error('Error obteniendo notas:', error);
+    res.status(500).json({
+      message: 'Error al obtener las notas',
+      error: error.message
+    });
+  }
+});
 // Endpoint para obtener unidades didácticas por semestre del estudiante
 app.get('/estudiante/:dni/unidades-didacticas', async (req, res) => {
   try {
