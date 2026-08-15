@@ -117,6 +117,53 @@ test('GET /horario/:programaId responde con el horario (o aviso de PDF)', async 
   assert.ok(res.body.message);
 });
 
+test('El token de un estudiante no puede operar sobre otro (IDOR)', async (t) => {
+  skipIfNoDb(t);
+  const conn = await mysql.createConnection(DB);
+
+  const dniA = randomDni();
+  const dniB = randomDni();
+  const usuarioA = `test_${crypto.randomBytes(4).toString('hex')}`;
+  const usuarioB = `test_${crypto.randomBytes(4).toString('hex')}`;
+  const clave = 'ClaveTest123';
+
+  try {
+    await conn.execute(
+      'INSERT INTO estudiantes (nombre, dni, usuario, clave, programa, programa_id) VALUES (?, ?, ?, ?, ?, ?)',
+      ['Estudiante A', dniA, usuarioA, clave, 'Desarrollo de Sistemas de Información', 1]
+    );
+    await conn.execute(
+      'INSERT INTO estudiantes (nombre, dni, usuario, clave, programa, programa_id) VALUES (?, ?, ?, ?, ?, ?)',
+      ['Estudiante B', dniB, usuarioB, clave, 'Desarrollo de Sistemas de Información', 1]
+    );
+
+    const login = await request(app).post('/login').send({ usuario: usuarioA, clave });
+    const token = login.body.token;
+    assert.ok(token);
+
+    // PUT update del estudiante B con token de A -> 403
+    const update = await request(app)
+      .put(`/estudiante/${dniB}/update`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ field: 'email', value: 'hack@example.com' });
+    assert.equal(update.status, 403);
+
+    // POST justificacion a nombre de B con token de A -> 403
+    const just = await request(app)
+      .post('/justificacion')
+      .set('Authorization', `Bearer ${token}`)
+      .field('dni_estudiante', dniB)
+      .field('tipo_justificacion', '1')
+      .field('motivo_estudiante', 'Intento ajeno')
+      .field('fecha_inicio', '2026-08-14')
+      .field('fecha_fin', '2026-08-15');
+    assert.equal(just.status, 403);
+  } finally {
+    await conn.execute('DELETE FROM estudiantes WHERE dni IN (?, ?)', [dniA, dniB]);
+    await conn.end();
+  }
+});
+
 test('POST /login con campos vacíos responde 400', async () => {
   const res = await request(app).post('/login').send({ usuario: '', clave: '' });
   assert.equal(res.status, 400);

@@ -22,8 +22,16 @@ router.post(
   requireAuth,
   uploadJustificacionImages.array('imagenes', config.uploads.maxImagesPerJustificacion),
   asyncHandler(async (req, res) => {
+    const uploadedFiles = req.files || [];
+
+    // Solo el propio estudiante puede justificar sus inasistencias.
+    // Multer ya guardó los temporales: se limpian antes de responder.
+    if (req.body.dni_estudiante !== req.user.dni) {
+      for (const file of uploadedFiles) fs.unlink(file.path, () => {});
+      return res.status(403).json({ message: 'No autorizado para este estudiante' });
+    }
+
     const connection = await pool.getConnection();
-    let uploadedFiles = req.files || [];
 
     try {
       await connection.beginTransaction();

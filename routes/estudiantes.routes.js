@@ -261,7 +261,11 @@ router.get(
     );
 
     if (rows.length > 0 && rows[0].imagen_url) {
-      const imagePath = path.join(PROFILE_IMAGES_DIR, rows[0].imagen_url);
+      // Evita path traversal: solo se sirven archivos dentro de profile_images/
+      const imagePath = path.resolve(PROFILE_IMAGES_DIR, path.basename(rows[0].imagen_url));
+      if (!imagePath.startsWith(path.resolve(PROFILE_IMAGES_DIR) + path.sep)) {
+        return res.status(400).json({ message: 'Imagen inválida' });
+      }
       if (fs.existsSync(imagePath)) {
         return res.sendFile(imagePath);
       }
@@ -281,6 +285,11 @@ router.post(
   requireAuth,
   uploadProfileImage.single('imagen'),
   asyncHandler(async (req, res) => {
+    // Solo el propio estudiante puede actualizar su imagen
+    if (req.user.dni !== req.params.dni) {
+      return res.status(403).json({ message: 'No autorizado para este estudiante' });
+    }
+
     if (!req.file) {
       return res.status(400).json({ message: 'No se proporcionó una imagen' });
     }
@@ -311,12 +320,21 @@ router.put(
       return res.status(400).json({ message: errors.array()[0].msg });
     }
 
+    // Solo el propio estudiante puede actualizar sus datos
+    if (req.user.dni !== req.params.dni) {
+      return res.status(403).json({ message: 'No autorizado para este estudiante' });
+    }
+
     const { field, value } = req.body;
 
     if (!ALLOWED_UPDATE_FIELDS.includes(field)) {
       return res.status(400).json({
         message: `Campo no permitido para actualización: ${field}`,
       });
+    }
+
+    if (typeof value !== 'string' || value.trim() === '') {
+      return res.status(400).json({ message: 'El valor del campo es obligatorio' });
     }
 
     const connection = await pool.getConnection();

@@ -1,6 +1,7 @@
 /**
  * Middlewares de manejo de errores.
  */
+const logger = require('../utils/logger');
 
 /**
  * Middleware 404: responde JSON cuando ninguna ruta coincide.
@@ -22,7 +23,7 @@ function errorHandler(err, req, res, next) {
   const status = isMulterError ? 400 : err.status || 500;
 
   if (status >= 500) {
-    console.error(err);
+    logger.error(err);
   }
 
   res.status(status).json({
