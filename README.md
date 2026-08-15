@@ -77,6 +77,30 @@ npm start          # o: npm run dev (con nodemon)
 | `npm run health` | Comprueba el estado del servicio (`GET /health`) |
 | `npm run migrate:passwords` | Migra contraseñas en texto plano a hashes bcrypt |
 
+## 🤝 Integración local con la app PHP
+
+La API comparte la base **`aplicativo`** con el sistema web PHP
+([progamins/iestp](https://github.com/progamins/iestp)): la app PHP gestiona
+el panel administrativo (asistencias, justificaciones, horarios) y la API
+sirve a la app móvil (estudiantes, notas, QR, subida de justificaciones).
+
+Para ejecutarlos **en conjunto** localmente:
+
+```bash
+# Terminal 1 — app PHP (panel admin en http://127.0.0.1:8080)
+cd iestp && bash start-local.sh
+#   admin@iestp.local / Admin123!
+
+# Terminal 2 — API Node apuntando al servidor PHP local
+cd proceso-nodes
+PHP_URL=http://127.0.0.1:8080 npm start
+#   http://localhost:3000
+```
+
+Las justificaciones que crea la API (con imágenes) se suben al servidor PHP
+local (`/upload.php`) y quedan visibles en el panel de justificaciones;
+ambos sistemas leen y escriben la misma base de datos.
+
 ## 🔐 Autenticación
 
 `POST /login` verifica las credenciales con **bcrypt** (migrando automáticamente
