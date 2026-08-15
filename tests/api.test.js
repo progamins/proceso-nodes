@@ -169,7 +169,10 @@ test('POST /login con campos vacíos responde 400', async () => {
   assert.equal(res.status, 400);
 });
 
-test('POST /login con credenciales inválidas responde 401', async () => {
+test('POST /login con credenciales inválidas responde 401', async (t) => {
+  // Sin base de datos el login no puede verificar credenciales (500);
+  // el 401 solo tiene sentido con la BD disponible.
+  skipIfNoDb(t);
   const res = await request(app)
     .post('/login')
     .send({ usuario: 'usuario_inexistente', clave: 'incorrecta' });
