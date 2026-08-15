@@ -39,7 +39,7 @@ router.get(
     const horarioUrl = `${config.phpUrl}/uploads/${archivo}`;
 
     try {
-      await axios.head(horarioUrl);
+      await axios.head(horarioUrl, { timeout: 5000 });
       res.json({
         message: 'Horario encontrado',
         data: { ...horario, url: horarioUrl },

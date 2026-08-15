@@ -28,6 +28,7 @@ async function uploadImageToPhp(filePath, originalname) {
     headers: formData.getHeaders(),
     maxContentLength: Infinity,
     maxBodyLength: Infinity,
+    timeout: 30000,
   });
 
   const url = `${config.phpUrl}/imagenesJ/${filename}`;

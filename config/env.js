@@ -41,6 +41,20 @@ const config = {
       max: parseInt(process.env.LOGIN_RATE_LIMIT_MAX || '100', 10),
     },
   },
+
+  auth: {
+    // Secreto para firmar los tokens JWT. Genera uno con:
+    //   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+    jwtSecret:
+      process.env.JWT_SECRET ||
+      (process.env.NODE_ENV === 'production'
+        ? (() => {
+            throw new Error('JWT_SECRET es obligatorio en producción');
+          })()
+        : 'dev-secret-no-usar-en-produccion'),
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN || '24h',
+    bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS || '10', 10),
+  },
 };
 
 module.exports = config;

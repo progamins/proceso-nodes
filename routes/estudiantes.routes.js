@@ -11,6 +11,7 @@ const config = require('../config/env');
 const asyncHandler = require('../utils/asyncHandler');
 const logger = require('../utils/logger');
 const { PROFILE_IMAGES_DIR, uploadProfileImage } = require('../middleware/upload');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -277,6 +278,7 @@ router.get(
  */
 router.post(
   '/:dni/imagen',
+  requireAuth,
   uploadProfileImage.single('imagen'),
   asyncHandler(async (req, res) => {
     if (!req.file) {
@@ -301,6 +303,7 @@ router.post(
  */
 router.put(
   '/:dni/update',
+  requireAuth,
   [body('field').notEmpty().withMessage('El campo es obligatorio')],
   asyncHandler(async (req, res) => {
     const errors = validationResult(req);

@@ -9,6 +9,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const logger = require('../utils/logger');
 const { uploadJustificacionImages, TEMP_UPLOADS_DIR } = require('../middleware/upload');
 const { uploadImageToPhp } = require('../services/iestp.service');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -18,6 +19,7 @@ const router = express.Router();
  */
 router.post(
   '/justificacion',
+  requireAuth,
   uploadJustificacionImages.array('imagenes', config.uploads.maxImagesPerJustificacion),
   asyncHandler(async (req, res) => {
     const connection = await pool.getConnection();

@@ -98,6 +98,11 @@ app.use(notFound);
 app.use(errorHandler);
 
 // ─── Arranque ───────────────────────────────────────────────────
-app.listen(config.port, () => {
-  logger.info(`API IESTP corriendo en http://localhost:${config.port} (${config.nodeEnv})`);
-});
+// Solo escucha cuando se ejecuta directamente (permite importar la app en tests)
+if (require.main === module) {
+  app.listen(config.port, () => {
+    logger.info(`API IESTP corriendo en http://localhost:${config.port} (${config.nodeEnv})`);
+  });
+}
+
+module.exports = app;
