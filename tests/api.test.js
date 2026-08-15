@@ -48,9 +48,15 @@ const EXAMPLE_DNI = '72345678';
 // DNI de 8 dígitos que no colisiona con los datos de ejemplo
 const randomDni = () => '9' + String(crypto.randomInt(1_000_000, 9_999_999));
 
-// Salta el test en tiempo de ejecución si la base no está disponible
+// Salta el test en tiempo de ejecución si la base no está disponible.
+// Devuelve true si lo saltó para que el cuerpo del test haga return
+// (t.skip() marca el test pero NO detiene la ejecución del cuerpo).
 const skipIfNoDb = (t) => {
-  if (!dbAvailable) return t.skip('Base de datos no disponible');
+  if (!dbAvailable) {
+    t.skip('Base de datos no disponible');
+    return true;
+  }
+  return false;
 };
 
 test('GET / responde con la información de la API', async () => {
@@ -74,14 +80,14 @@ test('GET /ruta-inexistente responde 404 JSON', async () => {
 });
 
 test('GET /test-db verifica la conexión a la base', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const res = await request(app).get('/test-db');
   assert.equal(res.status, 200);
   assert.equal(res.body.message, 'Conexión a la base de datos exitosa');
 });
 
 test('GET /estudiante/:dni devuelve los datos del estudiante', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const res = await request(app).get(`/estudiante/${EXAMPLE_DNI}`);
   assert.equal(res.status, 200);
   assert.equal(res.body.data.dni, EXAMPLE_DNI);
@@ -90,27 +96,27 @@ test('GET /estudiante/:dni devuelve los datos del estudiante', async (t) => {
 });
 
 test('GET /estudiante/:dni con DNI inexistente responde 404', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const res = await request(app).get('/estudiante/00000000');
   assert.equal(res.status, 404);
 });
 
 test('GET /estudiante/:dni/notas devuelve las notas', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const res = await request(app).get(`/estudiante/${EXAMPLE_DNI}/notas`);
   assert.equal(res.status, 200);
   assert.ok(Array.isArray(res.body.data));
 });
 
 test('GET /estudiante/:dni/unidades-didacticas devuelve las unidades', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const res = await request(app).get(`/estudiante/${EXAMPLE_DNI}/unidades-didacticas`);
   assert.equal(res.status, 200);
   assert.ok(Array.isArray(res.body.data.unidades_didacticas));
 });
 
 test('GET /horario/:programaId responde con el horario (o aviso de PDF)', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const res = await request(app).get('/horario/1');
   // 200 si el PDF existe, 404 si el archivo no está disponible; ambos son respuestas válidas
   assert.ok([200, 404].includes(res.status));
@@ -118,7 +124,7 @@ test('GET /horario/:programaId responde con el horario (o aviso de PDF)', async 
 });
 
 test('El token de un estudiante no puede operar sobre otro (IDOR)', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const conn = await mysql.createConnection(DB);
 
   const dniA = randomDni();
@@ -172,7 +178,7 @@ test('POST /login con campos vacíos responde 400', async () => {
 test('POST /login con credenciales inválidas responde 401', async (t) => {
   // Sin base de datos el login no puede verificar credenciales (500);
   // el 401 solo tiene sentido con la BD disponible.
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const res = await request(app)
     .post('/login')
     .send({ usuario: 'usuario_inexistente', clave: 'incorrecta' });
@@ -181,7 +187,7 @@ test('POST /login con credenciales inválidas responde 401', async (t) => {
 });
 
 test('Login con contraseña en texto plano emite JWT y migra a bcrypt', async (t) => {
-  skipIfNoDb(t);
+  if (skipIfNoDb(t)) return;
   const conn = await mysql.createConnection(DB);
 
   const dni = randomDni();
