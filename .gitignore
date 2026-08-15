@@ -1,0 +1,26 @@
+# Dependencias
+node_modules/
+
+# Entorno y secretos
+.env
+.env.local
+
+# Archivos subidos en tiempo de ejecución
+profile_images/
+temp_uploads/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/
+
+# Expo (si se genera en esta carpeta)
+.expo/
